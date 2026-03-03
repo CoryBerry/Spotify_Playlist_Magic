@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+
+{% block title %}Playlist Created!{% endblock %}
+
+{% block content %}
+  <div class="text-center mt-5">
+    <h2>Playlist Created!</h2>
+    <p class="lead">{{ playlist.name }}</p>
+    <p class="text-muted">{{ track_count }} tracks added in blocks.</p>
+    <a href="{{ playlist.external_urls.spotify }}" class="btn btn-success me-2" target="_blank">Open in Spotify</a>
+    <a href="/spotify/playlists" class="btn btn-outline-secondary">Build Another</a>
+  </div>
+{% endblock %}

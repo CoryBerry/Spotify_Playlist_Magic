@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+
+{% block title %}Build a Block Mix{% endblock %}
+
+{% block content %}
+  <h2>Build a Block Mix</h2>
+  <p class="text-muted">Select 2–6 playlists and choose how many songs per block. {{ playlists|length }} playlists loaded.</p>
+
+  <form method="POST" action="/spotify/build">
+
+    <div class="row align-items-end mb-4 g-3">
+      <div class="col-auto">
+        <label class="form-label fw-bold">Songs per block</label>
+        <select name="block_size" class="form-select" style="width: 100px;">
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="4" selected>4</option>
+          <option value="5">5</option>
+          <option value="6">6</option>
+        </select>
+      </div>
+      <div class="col-auto">
+        <label class="form-label fw-bold">Repeats</label>
+        <select name="repeats" class="form-select" style="width: 100px;">
+          <option value="1" selected>1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+          <option value="5">5</option>
+          <option value="6">6</option>
+          <option value="7">7</option>
+          <option value="8">8</option>
+        </select>
+      </div>
+      <div class="col-auto">
+        <label class="form-label fw-bold">Sort</label>
+        <select id="sortSelect" class="form-select" style="width: 180px;">
+          <option value="recent">Recently Added</option>
+          <option value="az">A → Z</option>
+          <option value="za">Z → A</option>
+          <option value="most">Most Tracks</option>
+          <option value="least">Fewest Tracks</option>
+        </select>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label fw-bold">Filter</label>
+        <input type="text" id="playlistFilter" class="form-control" placeholder="Type to filter...">
+      </div>
+      <div class="col-auto">
+        <span id="visibleCount" class="text-muted small"></span>
+      </div>
+    </div>
+
+    <div class="row row-cols-1 row-cols-md-3 g-3 mb-4" id="playlistGrid">
+      {% for playlist in playlists %}
+        <div class="col playlist-card"
+             data-name="{{ playlist.name | lower }}"
+             data-tracks="{{ playlist.tracks.total }}"
+             data-order="{{ loop.index }}">
+          <div class="card h-100 {% if playlist.tracks.total >= 500 %}border-warning{% endif %}">
+            {% if playlist.images %}
+              <img src="{{ playlist.images[0].url }}" class="card-img-top" style="height: 160px; object-fit: cover;">
+            {% endif %}
+            <div class="card-body">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="playlist_ids" value="{{ playlist.id }}" id="pl_{{ playlist.id }}">
+                <label class="form-check-label fw-bold" for="pl_{{ playlist.id }}">{{ playlist.name }}</label>
+              </div>
+              <p class="mt-1 mb-0 small">
+                {% if playlist.tracks.total >= 500 %}
+                  <span class="text-warning fw-bold">{{ playlist.tracks.total }} tracks</span>
+                {% else %}
+                  <span class="text-muted">{{ playlist.tracks.total }} tracks</span>
+                {% endif %}
+              </p>
+            </div>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+
+    <button type="submit" class="btn btn-success btn-lg">Build Playlist</button>
+  </form>
+
+  <script>
+    const grid   = document.getElementById("playlistGrid");
+    const filter = document.getElementById("playlistFilter");
+    const sorter = document.getElementById("sortSelect");
+    const counter = document.getElementById("visibleCount");
+
+    function getCards() {
+      return [...grid.querySelectorAll(".playlist-card")];
+    }
+
+    function applyFilter() {
+      const term = filter.value.toLowerCase();
+      getCards().forEach(card => {
+        card.style.display = card.dataset.name.includes(term) ? "" : "none";
+      });
+      updateCount();
+    }
+
+    function applySort() {
+      const val   = sorter.value;
+      const cards = getCards();
+      cards.sort((a, b) => {
+        if (val === "az")     return a.dataset.name.localeCompare(b.dataset.name);
+        if (val === "za")     return b.dataset.name.localeCompare(a.dataset.name);
+        if (val === "most")   return b.dataset.tracks - a.dataset.tracks;
+        if (val === "least")  return a.dataset.tracks - b.dataset.tracks;
+        return a.dataset.order - b.dataset.order; // "recent" = original Spotify order
+      });
+      cards.forEach(card => grid.appendChild(card));
+      updateCount();
+    }
+
+    function updateCount() {
+      const visible = getCards().filter(c => c.style.display !== "none").length;
+      counter.textContent = visible + " shown";
+    }
+
+    filter.addEventListener("input", applyFilter);
+    sorter.addEventListener("change", () => { applySort(); applyFilter(); });
+
+    updateCount();
+  </script>
+{% endblock %}
