@@ -2,7 +2,8 @@
 # app.py — Spotify Tools
 # ---------------------------------------------------------------
 
-from flask import Flask, render_template, request, session, redirect, url_for
+from flask import Flask, render_template, request, session, redirect, url_for, jsonify
+from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 from dotenv import load_dotenv
 import random
@@ -14,6 +15,27 @@ load_dotenv()
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key")
+app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///spotify_tools.db"
+
+db = SQLAlchemy(app)
+
+
+# ---------------------------------------------------------------
+# Models
+# ---------------------------------------------------------------
+
+class PlaylistTag(db.Model):
+    id          = db.Column(db.Integer, primary_key=True)
+    user_id     = db.Column(db.String(100), nullable=False, default="local")
+    playlist_id = db.Column(db.String(100), nullable=False)
+    tag         = db.Column(db.String(50),  nullable=False)
+    created_at  = db.Column(db.DateTime, default=datetime.now)
+
+    __table_args__ = (db.UniqueConstraint("user_id", "playlist_id", "tag"),)
+
+
+with app.app_context():
+    db.create_all()
 
 
 # ---------------------------------------------------------------
@@ -140,7 +162,15 @@ def spotify_playlists():
     # Only show playlists with enough tracks to be useful for block mixing
     playlists = [p for p in playlists if p["tracks"]["total"] >= 20]
 
-    return render_template("spotify_playlists.html", playlists=playlists)
+    # Pass tag data so Block Mix can filter by tag
+    all_tags = PlaylistTag.query.filter_by(user_id="local").all()
+    tag_map  = {}
+    for t in all_tags:
+        tag_map.setdefault(t.playlist_id, []).append(t.tag)
+
+    all_tag_names = sorted({t.tag for t in all_tags})
+
+    return render_template("spotify_playlists.html", playlists=playlists, tag_map=tag_map, all_tags=all_tag_names)
 
 
 @app.route("/spotify/build", methods=["POST"])
@@ -295,6 +325,42 @@ def album_blast():
     )
 
 
+# ---------------------------------------------------------------
+# Routes — Tagging
+# ---------------------------------------------------------------
+
+@app.route("/spotify/tag/add", methods=["POST"])
+def tag_add():
+    playlist_id = request.json.get("playlist_id")
+    tag         = request.json.get("tag", "").strip().lower()
+    if not playlist_id or not tag:
+        return jsonify({"error": "missing fields"}), 400
+    try:
+        db.session.add(PlaylistTag(user_id="local", playlist_id=playlist_id, tag=tag))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()  # tag already exists — ignore duplicate
+    tags = [r.tag for r in PlaylistTag.query.filter_by(user_id="local", playlist_id=playlist_id).order_by(PlaylistTag.tag)]
+    return jsonify({"tags": tags})
+
+
+@app.route("/spotify/tag/remove", methods=["POST"])
+def tag_remove():
+    playlist_id = request.json.get("playlist_id")
+    tag         = request.json.get("tag", "").strip().lower()
+    PlaylistTag.query.filter_by(user_id="local", playlist_id=playlist_id, tag=tag).delete()
+    db.session.commit()
+    tags = [r.tag for r in PlaylistTag.query.filter_by(user_id="local", playlist_id=playlist_id).order_by(PlaylistTag.tag)]
+    return jsonify({"tags": tags})
+
+
+@app.route("/spotify/tags/all")
+def tags_all():
+    """Return every unique tag for autocomplete."""
+    tags = [r.tag for r in db.session.query(PlaylistTag.tag).filter_by(user_id="local").distinct().order_by(PlaylistTag.tag)]
+    return jsonify({"tags": tags})
+
+
 @app.route("/spotify/manage")
 def spotify_manage():
     sp = get_spotify_client()
@@ -308,7 +374,13 @@ def spotify_manage():
         playlists.extend(results["items"])
         results = sp.next(results) if results["next"] else None
 
-    return render_template("spotify_manage.html", playlists=playlists, user_id=user_id)
+    # Build a dict of {playlist_id: [tags]} for the template
+    all_tags = PlaylistTag.query.filter_by(user_id="local").all()
+    tag_map  = {}
+    for t in all_tags:
+        tag_map.setdefault(t.playlist_id, []).append(t.tag)
+
+    return render_template("spotify_manage.html", playlists=playlists, user_id=user_id, tag_map=tag_map)
 
 
 @app.route("/spotify/preview/<playlist_id>")

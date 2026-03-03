@@ -39,6 +39,7 @@
         <tr>
           <th style="width: 40px;"></th>
           <th>Name</th>
+          <th>Tags</th>
           <th>Owner</th>
           <th>Tracks</th>
           <th>Visibility</th>
@@ -61,6 +62,20 @@
               {% if playlist.tracks.total >= 500 %}
                 <span class="badge bg-warning text-dark ms-1">500+</span>
               {% endif %}
+            </td>
+            <td class="tag-cell" data-playlist-id="{{ playlist.id }}">
+              <div class="d-flex flex-wrap gap-1 align-items-center tag-list">
+                {% for tag in tag_map.get(playlist.id, []) %}
+                  <span class="badge bg-info text-dark tag-badge">
+                    {{ tag }} <span class="tag-remove ms-1" style="cursor:pointer;" data-tag="{{ tag }}">×</span>
+                  </span>
+                {% endfor %}
+              </div>
+              <div class="d-flex gap-1 mt-1">
+                <input type="text" class="form-control form-control-sm tag-input" placeholder="Add tag..."
+                       list="tag-suggestions" style="max-width: 130px;">
+                <button type="button" class="btn btn-outline-info btn-sm tag-add-btn">+</button>
+              </div>
             </td>
             <td>
               {% if playlist.owner.id == user_id %}
@@ -91,7 +106,7 @@
           </tr>
           <!-- Preview row — hidden until loaded -->
           <tr class="preview-row d-none" id="preview-{{ playlist.id }}">
-            <td colspan="6" class="ps-4 text-muted small bg-light">
+            <td colspan="7" class="ps-4 text-muted small bg-light">
               <span class="preview-content">Loading...</span>
             </td>
           </tr>
@@ -99,6 +114,9 @@
       </tbody>
     </table>
   </form>
+
+  <!-- Autocomplete source for tag inputs — populated via JS from /spotify/tags/all -->
+  <datalist id="tag-suggestions"></datalist>
 
   <!-- Confirmation Modal -->
   <div class="modal fade" id="confirmModal" tabindex="-1">
@@ -250,5 +268,84 @@
     });
 
     updateCounts();
+
+    // ---------------------------------------------------------------
+    // Tagging
+    // ---------------------------------------------------------------
+
+    // Load all existing tags into the datalist for autocomplete
+    function refreshDatalist() {
+      fetch("/spotify/tags/all")
+        .then(r => r.json())
+        .then(data => {
+          const dl = document.getElementById("tag-suggestions");
+          dl.innerHTML = "";
+          data.tags.forEach(tag => {
+            const opt = document.createElement("option");
+            opt.value = tag;
+            dl.appendChild(opt);
+          });
+        });
+    }
+    refreshDatalist();
+
+    function renderTags(cell, tags) {
+      const list = cell.querySelector(".tag-list");
+      list.innerHTML = "";
+      tags.forEach(tag => {
+        const badge = document.createElement("span");
+        badge.className = "badge bg-info text-dark tag-badge";
+        badge.textContent = tag + " ";
+        const x = document.createElement("span");
+        x.textContent = "×";
+        x.className = "tag-remove ms-1";
+        x.style.cursor = "pointer";
+        x.dataset.tag = tag;
+        badge.appendChild(x);
+        list.appendChild(badge);
+      });
+    }
+
+    function tagRequest(url, playlist_id, tag, cell) {
+      fetch(url, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({playlist_id, tag})
+      })
+      .then(r => r.json())
+      .then(data => {
+        renderTags(cell, data.tags);
+        refreshDatalist();
+      });
+    }
+
+    // Add tag via + button or Enter key
+    body.addEventListener("click", e => {
+      if (!e.target.classList.contains("tag-add-btn")) return;
+      const cell  = e.target.closest(".tag-cell");
+      const input = cell.querySelector(".tag-input");
+      const tag   = input.value.trim().toLowerCase();
+      if (!tag) return;
+      tagRequest("/spotify/tag/add", cell.dataset.playlistId, tag, cell);
+      input.value = "";
+    });
+
+    body.addEventListener("keydown", e => {
+      if (e.key !== "Enter" || !e.target.classList.contains("tag-input")) return;
+      e.preventDefault();
+      const cell = e.target.closest(".tag-cell");
+      const tag  = e.target.value.trim().toLowerCase();
+      if (!tag) return;
+      tagRequest("/spotify/tag/add", cell.dataset.playlistId, tag, cell);
+      e.target.value = "";
+    });
+
+    // Remove tag via × click
+    body.addEventListener("click", e => {
+      if (!e.target.classList.contains("tag-remove")) return;
+      const cell = e.target.closest(".tag-cell");
+      tagRequest("/spotify/tag/remove", cell.dataset.playlistId, e.target.dataset.tag, cell);
+    });
+
   </script>
 {% endblock %}

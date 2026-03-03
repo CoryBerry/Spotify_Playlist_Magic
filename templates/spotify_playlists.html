@@ -52,17 +52,31 @@
     </div>
 
     <!-- Mood filter — disabled, Spotify restricted audio-features API for new apps -->
-    <div class="mb-4">
+    <div class="mb-3">
       <label class="form-label fw-bold d-block">Mood Filter <span class="badge bg-secondary ms-1">Unavailable</span></label>
       <div class="text-muted small">Spotify restricted the audio features API for new apps in late 2024. Coming back when we get extended access.</div>
     </div>
+
+    <!-- Tag filter -->
+    {% if all_tags %}
+    <div class="mb-4">
+      <label class="form-label fw-bold d-block">Filter by Tag</label>
+      <div class="d-flex flex-wrap gap-2">
+        <button type="button" class="btn btn-sm btn-secondary tag-filter-btn active" data-tag="">All</button>
+        {% for tag in all_tags %}
+          <button type="button" class="btn btn-sm btn-outline-info tag-filter-btn" data-tag="{{ tag }}">{{ tag }}</button>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
 
     <div class="row row-cols-1 row-cols-md-3 g-3 mb-4" id="playlistGrid">
       {% for playlist in playlists %}
         <div class="col playlist-card"
              data-name="{{ playlist.name | lower }}"
              data-tracks="{{ playlist.tracks.total }}"
-             data-order="{{ loop.index }}">
+             data-order="{{ loop.index }}"
+             data-tags="{{ tag_map.get(playlist.id, []) | join(',') | lower }}">
           <div class="card h-100 {% if playlist.tracks.total >= 500 %}border-warning{% endif %}">
             {% if playlist.images %}
               <img src="{{ playlist.images[0].url }}" class="card-img-top" style="height: 160px; object-fit: cover;">
@@ -80,6 +94,13 @@
                   <span class="text-muted">{{ playlist.tracks.total }} tracks</span>
                 {% endif %}
               </p>
+              {% if tag_map.get(playlist.id) %}
+                <div class="mt-2 d-flex flex-wrap gap-1">
+                  {% for tag in tag_map.get(playlist.id, []) %}
+                    <span class="badge bg-info text-dark">{{ tag }}</span>
+                  {% endfor %}
+                </div>
+              {% endif %}
             </div>
           </div>
         </div>
@@ -131,6 +152,29 @@
 
     filter.addEventListener("input", applyFilter);
     sorter.addEventListener("change", () => { applySort(); applyFilter(); });
+
+    // Tag filter
+    let activeTag = "";
+    document.querySelectorAll(".tag-filter-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".tag-filter-btn").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        activeTag = btn.dataset.tag;
+        applyFilter();
+      });
+    });
+
+    // Override applyFilter to also respect activeTag
+    const originalApplyFilter = applyFilter;
+    function applyFilter() {
+      const term = filter.value.toLowerCase();
+      getCards().forEach(card => {
+        const nameMatch = card.dataset.name.includes(term);
+        const tagMatch  = !activeTag || card.dataset.tags.split(",").includes(activeTag);
+        card.style.display = (nameMatch && tagMatch) ? "" : "none";
+      });
+      updateCount();
+    }
 
     updateCount();
   </script>
