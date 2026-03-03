@@ -20,5 +20,19 @@
 
   <div class="alert alert-info mt-4">{{ compliment }}</div>
 
-  <p class="text-muted mt-2">Page hits: {{ hit_count }}</p>
+  <hr class="mt-4">
+  <h5>Visits <span class="badge bg-secondary">{{ hit_count }}</span></h5>
+  <table class="table table-striped mt-3">
+    <thead>
+      <tr><th>Name</th><th>Date &amp; Time</th></tr>
+    </thead>
+    <tbody>
+      {% for visit in visits %}
+        <tr>
+          <td>{{ visit.name }}</td>
+          <td>{{ visit.visited_at.strftime("%D %I:%M %p") }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
 {% endblock %}
