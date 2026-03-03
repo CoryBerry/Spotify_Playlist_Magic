@@ -159,6 +159,8 @@ def spotify_playlists():
         playlists.extend(results["items"])
         results = sp.next(results) if results["next"] else None
 
+    user_id = sp.me()["id"]
+
     # Only show playlists with enough tracks to be useful for block mixing
     playlists = [p for p in playlists if p["tracks"]["total"] >= 20]
 
@@ -170,7 +172,7 @@ def spotify_playlists():
 
     all_tag_names = sorted({t.tag for t in all_tags})
 
-    return render_template("spotify_playlists.html", playlists=playlists, tag_map=tag_map, all_tags=all_tag_names)
+    return render_template("spotify_playlists.html", playlists=playlists, tag_map=tag_map, all_tags=all_tag_names, user_id=user_id)
 
 
 @app.route("/spotify/build", methods=["POST"])
@@ -249,13 +251,19 @@ def album_blaster():
     if not sp:
         return redirect(url_for("spotify_login"))
 
+    user_id   = sp.me()["id"]
     playlists = []
     results   = sp.current_user_playlists(limit=50)
     while results:
         playlists.extend(results["items"])
         results = sp.next(results) if results["next"] else None
 
-    return render_template("spotify_album_blaster.html", playlists=playlists)
+    all_tags = PlaylistTag.query.filter_by(user_id="local").all()
+    tag_map  = {}
+    for t in all_tags:
+        tag_map.setdefault(t.playlist_id, []).append(t.tag)
+
+    return render_template("spotify_album_blaster.html", playlists=playlists, user_id=user_id, tag_map=tag_map)
 
 
 @app.route("/spotify/album-blaster/<playlist_id>")

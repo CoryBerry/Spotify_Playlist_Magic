@@ -18,10 +18,24 @@
   <div class="list-group" id="playlistList">
     {% for playlist in playlists %}
       <a href="/spotify/album-blaster/{{ playlist.id }}"
-         class="list-group-item list-group-item-action d-flex justify-content-between align-items-center playlist-row"
+         class="list-group-item list-group-item-action playlist-row"
          data-name="{{ playlist.name | lower }}">
-        <span class="fw-bold">{{ playlist.name }}</span>
-        <span class="badge bg-secondary">{{ playlist.tracks.total }} tracks</span>
+        <div class="d-flex justify-content-between align-items-start">
+          <div>
+            <span class="fw-bold">{{ playlist.name }}</span>
+            {% if playlist.owner.id != user_id %}
+              <span class="text-muted small ms-2">by {{ playlist.owner.display_name or playlist.owner.id }}</span>
+            {% endif %}
+            {% if tag_map.get(playlist.id) %}
+              <div class="mt-1 d-flex flex-wrap gap-1">
+                {% for tag in tag_map.get(playlist.id, []) %}
+                  <span class="badge bg-info text-dark">{{ tag }}</span>
+                {% endfor %}
+              </div>
+            {% endif %}
+          </div>
+          <span class="badge bg-secondary ms-3 mt-1">{{ playlist.tracks.total }} tracks</span>
+        </div>
       </a>
     {% endfor %}
   </div>

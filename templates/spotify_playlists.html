@@ -93,6 +93,9 @@
                 {% else %}
                   <span class="text-muted">{{ playlist.tracks.total }} tracks</span>
                 {% endif %}
+                {% if playlist.owner.id != user_id %}
+                  <span class="text-muted"> · by {{ playlist.owner.display_name or playlist.owner.id }}</span>
+                {% endif %}
               </p>
               {% if tag_map.get(playlist.id) %}
                 <div class="mt-2 d-flex flex-wrap gap-1">
