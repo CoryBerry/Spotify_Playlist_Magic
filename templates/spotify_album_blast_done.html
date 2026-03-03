@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block title %}Album Blast Complete!{% endblock %}
+
+{% block content %}
+  <div class="text-center mt-5">
+    <h2>💥 Album Blast Complete!</h2>
+    <p class="lead">{{ playlist.name }}</p>
+    <p class="text-muted">{{ track_count }} tracks from {{ album_names|length }} albums.</p>
+
+    <div class="d-inline-block text-start mt-2 mb-4">
+      <ul class="list-unstyled">
+        {% for name in album_names %}
+          <li class="text-muted small">• {{ name }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+
+    <div>
+      <a href="{{ playlist.external_urls.spotify }}" class="btn btn-success me-2" target="_blank">Open in Spotify</a>
+      <a href="/spotify/album-blaster" class="btn btn-outline-secondary">Blast Another</a>
+    </div>
+  </div>
+{% endblock %}

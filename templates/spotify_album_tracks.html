@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+
+{% block title %}{{ playlist.name }} — Album Blaster{% endblock %}
+
+{% block content %}
+  <div class="d-flex justify-content-between align-items-center mb-1">
+    <h2>{{ playlist.name }}</h2>
+    <a href="/spotify/album-blaster" class="btn btn-outline-secondary btn-sm">← Back</a>
+  </div>
+  <p class="text-muted">Select 5–30 tracks. Each track's full album will be added to a new playlist.</p>
+
+  <div class="d-flex align-items-center gap-3 mb-3">
+    <input type="text" id="filterInput" class="form-control" style="max-width: 300px;" placeholder="Filter tracks...">
+    <span class="fw-bold" id="selCounter">0 / 30 selected</span>
+    <button type="button" id="blastBtn" class="btn btn-danger ms-auto" disabled>💥 Album Blast!</button>
+  </div>
+
+  <form id="blastForm" method="POST" action="/spotify/album-blast">
+    <table class="table table-hover table-sm align-middle">
+      <thead class="table-dark">
+        <tr>
+          <th style="width: 40px;"></th>
+          <th>Track</th>
+          <th>Artist</th>
+          <th>Album</th>
+        </tr>
+      </thead>
+      <tbody id="trackBody">
+        {% for track in tracks %}
+          <tr class="track-row" data-name="{{ (track.name ~ ' ' ~ track.artists[0].name) | lower }}">
+            <td>
+              <input class="form-check-input track-check" type="checkbox"
+                     name="track_ids" value="{{ track.id }}">
+            </td>
+            <td>{{ track.name }}</td>
+            <td class="text-muted">{{ track.artists[0].name }}</td>
+            <td class="text-muted small">{{ track.album.name }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </form>
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    const filterInput = document.getElementById("filterInput");
+    const blastBtn    = document.getElementById("blastBtn");
+    const selCounter  = document.getElementById("selCounter");
+    const MAX         = 30;
+    const MIN         = 5;
+
+    function getChecked() {
+      return [...document.querySelectorAll(".track-check:checked")];
+    }
+
+    function updateState() {
+      const checked = getChecked().length;
+      selCounter.textContent = `${checked} / ${MAX} selected`;
+      selCounter.className   = checked >= MIN ? "fw-bold text-success" : "fw-bold text-muted";
+      blastBtn.disabled      = checked < MIN;
+
+      // Disable unchecked boxes once at max
+      document.querySelectorAll(".track-check:not(:checked)").forEach(cb => {
+        cb.disabled = checked >= MAX;
+      });
+    }
+
+    // Filter
+    filterInput.addEventListener("input", () => {
+      const term = filterInput.value.toLowerCase();
+      document.querySelectorAll(".track-row").forEach(row => {
+        row.classList.toggle("d-none", !row.dataset.name.includes(term));
+      });
+    });
+
+    // Checkbox changes
+    document.getElementById("trackBody").addEventListener("change", updateState);
+
+    // Blast button submits the form
+    blastBtn.addEventListener("click", () => {
+      document.getElementById("blastForm").submit();
+    });
+
+    updateState();
+  </script>
+{% endblock %}

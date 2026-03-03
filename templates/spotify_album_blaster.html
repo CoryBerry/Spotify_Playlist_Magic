@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block title %}Album Blaster{% endblock %}
+
+{% block content %}
+  <h2>Album Blaster</h2>
+  <p class="text-muted">Pick a playlist to browse its tracks, then select songs to blast their full albums into a new playlist.</p>
+
+  <div class="row mb-3">
+    <div class="col-md-4">
+      <input type="text" id="filterInput" class="form-control" placeholder="Filter playlists...">
+    </div>
+    <div class="col-auto">
+      <span id="visibleCount" class="text-muted small mt-2 d-inline-block"></span>
+    </div>
+  </div>
+
+  <div class="list-group" id="playlistList">
+    {% for playlist in playlists %}
+      <a href="/spotify/album-blaster/{{ playlist.id }}"
+         class="list-group-item list-group-item-action d-flex justify-content-between align-items-center playlist-row"
+         data-name="{{ playlist.name | lower }}">
+        <span class="fw-bold">{{ playlist.name }}</span>
+        <span class="badge bg-secondary">{{ playlist.tracks.total }} tracks</span>
+      </a>
+    {% endfor %}
+  </div>
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    const filter = document.getElementById("filterInput");
+    const rows   = document.querySelectorAll(".playlist-row");
+    const count  = document.getElementById("visibleCount");
+
+    function update() {
+      const term    = filter.value.toLowerCase();
+      let   visible = 0;
+      rows.forEach(row => {
+        const show = row.dataset.name.includes(term);
+        row.classList.toggle("d-none", !show);
+        if (show) visible++;
+      });
+      count.textContent = visible + " shown";
+    }
+
+    filter.addEventListener("input", update);
+    update();
+  </script>
+{% endblock %}

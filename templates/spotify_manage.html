@@ -42,7 +42,7 @@
           <th>Owner</th>
           <th>Tracks</th>
           <th>Visibility</th>
-          <th style="width: 80px;"></th>
+          <th>Actions</th>
         </tr>
       </thead>
       <tbody id="playlistBody">
@@ -72,14 +72,20 @@
             <td class="text-muted small">{{ playlist.tracks.total }}</td>
             <td>
               {% if playlist.public %}
-                <span class="text-muted small">Public</span>
+                <span class="badge bg-success">Public</span>
               {% else %}
                 <span class="text-muted small">Private</span>
               {% endif %}
             </td>
-            <td>
+            <td class="d-flex gap-1">
               <button type="button" class="btn btn-outline-secondary btn-sm preview-btn"
                       data-id="{{ playlist.id }}">Preview</button>
+              {% if playlist.owner.id == user_id %}
+                <a href="/spotify/toggle-visibility/{{ playlist.id }}"
+                   class="btn btn-sm {{ 'btn-outline-success' if playlist.public else 'btn-outline-secondary' }}">
+                  {{ '🔓 Make Private' if playlist.public else '🔒 Make Public' }}
+                </a>
+              {% endif %}
             </td>
           </tr>
           <!-- Preview row — hidden until loaded -->
