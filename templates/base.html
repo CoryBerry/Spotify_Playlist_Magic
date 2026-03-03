@@ -28,6 +28,24 @@
     {% block content %}{% endblock %}
   </div>
 
+  {% if cache_updated_at %}
+  <footer class="border-top mt-5 py-3 text-center text-muted small">
+    Playlist data cached &middot; Updated <span id="cacheAge"></span>
+    &middot; <a href="/spotify/cache/refresh?next={{ request.path }}" class="text-muted">Refresh now</a>
+    <script>
+      (function() {
+        const updated = new Date("{{ cache_updated_at.strftime('%Y-%m-%dT%H:%M:%S') }}");
+        const diff    = Math.floor((Date.now() - updated.getTime()) / 1000);
+        let label;
+        if      (diff < 60)   label = diff + "s ago";
+        else if (diff < 3600) label = Math.floor(diff / 60) + "m ago";
+        else                  label = Math.floor(diff / 3600) + "h ago";
+        document.getElementById("cacheAge").textContent = label;
+      })();
+    </script>
+  </footer>
+  {% endif %}
+
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   {% block scripts %}{% endblock %}
 </body>

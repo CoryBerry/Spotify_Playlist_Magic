@@ -4,9 +4,10 @@
 
 from flask import Flask, render_template, request, session, redirect, url_for, jsonify
 from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import random
+import json
 import os
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
@@ -32,6 +33,13 @@ class PlaylistTag(db.Model):
     created_at  = db.Column(db.DateTime, default=datetime.now)
 
     __table_args__ = (db.UniqueConstraint("user_id", "playlist_id", "tag"),)
+
+
+class PlaylistCache(db.Model):
+    id         = db.Column(db.Integer, primary_key=True)
+    user_id    = db.Column(db.String(100), nullable=False, unique=True)
+    data       = db.Column(db.Text, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.now)
 
 
 with app.app_context():
@@ -99,6 +107,35 @@ def get_spotify_client():
     return spotipy.Spotify(auth=token_info["access_token"])
 
 
+CACHE_TTL = timedelta(hours=1)
+
+def get_cached_playlists(sp, user_id):
+    """Return (playlists, updated_at, from_cache).
+    Serves from DB cache if under 1 hour old; otherwise re-fetches from Spotify."""
+    cache = PlaylistCache.query.filter_by(user_id=user_id).first()
+    now   = datetime.now()
+
+    if cache and (now - cache.updated_at) < CACHE_TTL:
+        return json.loads(cache.data), cache.updated_at, True
+
+    # Fetch fresh from Spotify
+    playlists = []
+    results   = sp.current_user_playlists(limit=50)
+    while results:
+        playlists.extend(results["items"])
+        results = sp.next(results) if results["next"] else None
+
+    data = json.dumps(playlists)
+    if cache:
+        cache.data       = data
+        cache.updated_at = now
+    else:
+        db.session.add(PlaylistCache(user_id=user_id, data=data, updated_at=now))
+    db.session.commit()
+
+    return playlists, now, False
+
+
 # ---------------------------------------------------------------
 # Routes — General
 # ---------------------------------------------------------------
@@ -152,14 +189,8 @@ def spotify_playlists():
     if not sp:
         return redirect(url_for("spotify_login"))
 
-    # Paginate through all playlists (Spotify returns max 50 at a time)
-    playlists = []
-    results = sp.current_user_playlists(limit=50)
-    while results:
-        playlists.extend(results["items"])
-        results = sp.next(results) if results["next"] else None
-
     user_id = sp.me()["id"]
+    playlists, cache_updated_at, _ = get_cached_playlists(sp, user_id)
 
     # Only show playlists with enough tracks to be useful for block mixing
     playlists = [p for p in playlists if p["tracks"]["total"] >= 20]
@@ -172,7 +203,9 @@ def spotify_playlists():
 
     all_tag_names = sorted({t.tag for t in all_tags})
 
-    return render_template("spotify_playlists.html", playlists=playlists, tag_map=tag_map, all_tags=all_tag_names, user_id=user_id)
+    return render_template("spotify_playlists.html", playlists=playlists, tag_map=tag_map,
+                           all_tags=all_tag_names, user_id=user_id,
+                           cache_updated_at=cache_updated_at)
 
 
 @app.route("/spotify/build", methods=["POST"])
@@ -251,19 +284,16 @@ def album_blaster():
     if not sp:
         return redirect(url_for("spotify_login"))
 
-    user_id   = sp.me()["id"]
-    playlists = []
-    results   = sp.current_user_playlists(limit=50)
-    while results:
-        playlists.extend(results["items"])
-        results = sp.next(results) if results["next"] else None
+    user_id = sp.me()["id"]
+    playlists, cache_updated_at, _ = get_cached_playlists(sp, user_id)
 
     all_tags = PlaylistTag.query.filter_by(user_id="local").all()
     tag_map  = {}
     for t in all_tags:
         tag_map.setdefault(t.playlist_id, []).append(t.tag)
 
-    return render_template("spotify_album_blaster.html", playlists=playlists, user_id=user_id, tag_map=tag_map)
+    return render_template("spotify_album_blaster.html", playlists=playlists, user_id=user_id,
+                           tag_map=tag_map, cache_updated_at=cache_updated_at)
 
 
 @app.route("/spotify/album-blaster/<playlist_id>")
@@ -375,12 +405,8 @@ def spotify_manage():
     if not sp:
         return redirect(url_for("spotify_login"))
 
-    user_id   = sp.me()["id"]
-    playlists = []
-    results   = sp.current_user_playlists(limit=50)
-    while results:
-        playlists.extend(results["items"])
-        results = sp.next(results) if results["next"] else None
+    user_id = sp.me()["id"]
+    playlists, cache_updated_at, _ = get_cached_playlists(sp, user_id)
 
     # Build a dict of {playlist_id: [tags]} for the template
     all_tags = PlaylistTag.query.filter_by(user_id="local").all()
@@ -388,7 +414,8 @@ def spotify_manage():
     for t in all_tags:
         tag_map.setdefault(t.playlist_id, []).append(t.tag)
 
-    return render_template("spotify_manage.html", playlists=playlists, user_id=user_id, tag_map=tag_map)
+    return render_template("spotify_manage.html", playlists=playlists, user_id=user_id,
+                           tag_map=tag_map, cache_updated_at=cache_updated_at)
 
 
 @app.route("/spotify/preview/<playlist_id>")
@@ -430,5 +457,19 @@ def spotify_delete():
         sp.current_user_unfollow_playlist(playlist_id)  # unfollow = delete for owned playlists
 
     return redirect(url_for("spotify_manage"))
+
+
+@app.route("/spotify/cache/refresh")
+def cache_refresh():
+    sp = get_spotify_client()
+    if not sp:
+        return redirect(url_for("spotify_login"))
+    user_id = sp.me()["id"]
+    cache = PlaylistCache.query.filter_by(user_id=user_id).first()
+    if cache:
+        db.session.delete(cache)
+        db.session.commit()
+    next_url = request.args.get("next") or url_for("spotify_playlists")
+    return redirect(next_url)
 
 
