@@ -1,34 +1,58 @@
-# Yes, this is a lot of boilerplate just to show today's date.
-# The alternative is JavaScript in the HTML, which does it in one line.
-# But here we are — serving a full HTTP server for a timestamp.
+# ---------------------------------------------------------------
+# app.py — Flask playground
+# Learning project: Python + Flask vs ColdFusion
+# ---------------------------------------------------------------
 
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from flask import Flask, render_template, request
 from datetime import datetime
+import random
 
-# Extend the built-in request handler so we can intercept GET requests
-class Handler(SimpleHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == "/":
-            # Get today's date and format it as dd, mm, yyyy
-            date_str = datetime.now().strftime("%d, %m, %Y")
+app = Flask(__name__)
 
-            # Read the HTML template from disk
-            with open("index.html", "r") as f:
-                html = f.read()
 
-            # Swap the placeholder with the real date
-            html = html.replace("{{DATE}}", date_str)
+# ---------------------------------------------------------------
+# Data — in a real app this would come from a database
+# ---------------------------------------------------------------
 
-            # Send the response
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html")
-            self.end_headers()
-            self.wfile.write(html.encode())
-        else:
-            # Fall back to default static file serving for anything else
-            super().do_GET()
+hit_count = 0  # resets when the server restarts
 
-if __name__ == "__main__":
-    server = HTTPServer(("localhost", 8000), Handler)
-    print("Serving at http://localhost:8000")
-    server.serve_forever()
+compliments = [
+    "You write really clean code.",
+    "You ask great questions.",
+    "Your variable names are surprisingly readable.",
+    "You would have caught that bug eventually.",
+    "Honestly, ColdFusion wasn't that bad.",
+]
+
+
+# ---------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------
+
+@app.route("/", methods=["GET", "POST"])
+def index():
+    global hit_count
+    hit_count += 1
+
+    date_str = datetime.now().strftime("%D")
+    message = None
+
+    # Handle form submission
+    if request.method == "POST":
+        name = request.form["name"]  # like form.name in CF
+        message = f"Hey, {name}!"
+
+    compliment = random.choice(compliments)
+
+    return render_template(
+        "index.html",
+        date=date_str,
+        message=message,
+        hit_count=hit_count,
+        compliment=compliment
+    )
+
+
+@app.route("/about")
+def about():
+    return render_template("about.html")

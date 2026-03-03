@@ -1,11 +1,24 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Hello World</title>
-</head>
-<body>
-  <p>Hello world, today is {{DATE}}.</p>
-</body>
-</html>
+{% extends "base.html" %}
+
+{% block title %}Home{% endblock %}
+
+{% block content %}
+  <p class="lead">Hello world, today is {{ date }}.</p>
+
+  <form method="POST" class="row g-2 mt-3">
+    <div class="col-auto">
+      <input type="text" name="name" class="form-control" placeholder="Enter your name">
+    </div>
+    <div class="col-auto">
+      <button type="submit" class="btn btn-primary">Submit</button>
+    </div>
+  </form>
+
+  {% if message %}
+    <div class="alert alert-success mt-4">{{ message }}</div>
+  {% endif %}
+
+  <div class="alert alert-info mt-4">{{ compliment }}</div>
+
+  <p class="text-muted mt-2">Page hits: {{ hit_count }}</p>
+{% endblock %}
