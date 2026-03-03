@@ -1,38 +1,63 @@
 {% extends "base.html" %}
 
-{% block title %}Home{% endblock %}
+{% block title %}Spotify Tools{% endblock %}
 
 {% block content %}
-  <p class="lead">Hello world, today is {{ date }}.</p>
+  <div class="mb-5">
+    <h1>Spotify Tools</h1>
+    <p class="lead text-muted">A personal toolkit for building and managing Spotify playlists.</p>
+    {% if not logged_in %}
+      <a href="/spotify/login" class="btn btn-success">Connect with Spotify</a>
+    {% endif %}
+  </div>
 
-  <form method="POST" class="row g-2 mt-3">
-    <div class="col-auto">
-      <input type="text" name="name" class="form-control" placeholder="Enter your name">
+  <div class="row g-4">
+
+    <div class="col-md-4">
+      <div class="card h-100">
+        <div class="card-body">
+          <h4 class="card-title">🎵 Block Mix</h4>
+          <p class="card-text text-muted">
+            Select 2–6 playlists and build a new playlist where songs rotate in blocks —
+            4 from one genre, then 4 from another, like the old Pandora experience.
+            Supports repeats and full randomization.
+          </p>
+        </div>
+        <div class="card-footer bg-transparent">
+          <a href="/spotify" class="btn btn-primary">Open Block Mix</a>
+        </div>
+      </div>
     </div>
-    <div class="col-auto">
-      <button type="submit" class="btn btn-primary">Submit</button>
+
+    <div class="col-md-4">
+      <div class="card h-100">
+        <div class="card-body">
+          <h4 class="card-title">💥 Album Blaster</h4>
+          <p class="card-text text-muted">
+            Browse any playlist, pick 5–30 tracks, and blast their full albums into a
+            brand new playlist. Great for rediscovering albums you forgot you loved.
+          </p>
+        </div>
+        <div class="card-footer bg-transparent">
+          <a href="/spotify/album-blaster" class="btn btn-primary">Open Album Blaster</a>
+        </div>
+      </div>
     </div>
-  </form>
 
-  {% if message %}
-    <div class="alert alert-success mt-4">{{ message }}</div>
-  {% endif %}
+    <div class="col-md-4">
+      <div class="card h-100">
+        <div class="card-body">
+          <h4 class="card-title">🗂️ Manage Playlists</h4>
+          <p class="card-text text-muted">
+            Browse all your playlists in a filterable, sortable table. Preview tracks,
+            toggle public/private visibility, and bulk delete playlists you no longer need.
+          </p>
+        </div>
+        <div class="card-footer bg-transparent">
+          <a href="/spotify/manage" class="btn btn-primary">Open Manager</a>
+        </div>
+      </div>
+    </div>
 
-  <div class="alert alert-info mt-4">{{ compliment }}</div>
-
-  <hr class="mt-4">
-  <h5>Visits <span class="badge bg-secondary">{{ hit_count }}</span></h5>
-  <table class="table table-striped mt-3">
-    <thead>
-      <tr><th>Name</th><th>Date &amp; Time</th></tr>
-    </thead>
-    <tbody>
-      {% for visit in visits %}
-        <tr>
-          <td>{{ visit.name }}</td>
-          <td>{{ visit.visited_at.strftime("%D %I:%M %p") }}</td>
-        </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  </div>
 {% endblock %}

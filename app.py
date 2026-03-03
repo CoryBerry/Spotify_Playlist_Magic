@@ -1,10 +1,8 @@
 # ---------------------------------------------------------------
-# app.py — Flask playground
-# Learning project: Python + Flask vs ColdFusion
+# app.py — Spotify Tools
 # ---------------------------------------------------------------
 
 from flask import Flask, render_template, request, session, redirect, url_for
-from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 from dotenv import load_dotenv
 import random
@@ -12,13 +10,10 @@ import os
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
-load_dotenv()  # loads values from .env into os.environ
+load_dotenv()
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key")
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///visits.db"
-
-db = SQLAlchemy(app)
 
 
 # ---------------------------------------------------------------
@@ -83,58 +78,13 @@ def get_spotify_client():
 
 
 # ---------------------------------------------------------------
-# Models
-# ---------------------------------------------------------------
-
-class Visit(db.Model):
-    id         = db.Column(db.Integer, primary_key=True)
-    name       = db.Column(db.String(100), nullable=False)
-    visited_at = db.Column(db.DateTime, default=datetime.now)
-
-
-# ---------------------------------------------------------------
-# Data
-# ---------------------------------------------------------------
-
-compliments = [
-    "You write really clean code.",
-    "You ask great questions.",
-    "Your variable names are surprisingly readable.",
-    "You would have caught that bug eventually.",
-    "Honestly, ColdFusion wasn't that bad.",
-]
-
-
-# ---------------------------------------------------------------
 # Routes — General
 # ---------------------------------------------------------------
 
-@app.route("/", methods=["GET", "POST"])
+@app.route("/")
 def index():
-    message = None
-
-    if request.method == "POST":
-        name = request.form["name"]
-        session["name"] = name
-        existing = Visit.query.filter_by(name=name).first()
-        if existing:
-            message = f"{name} is already in the list."
-        else:
-            db.session.add(Visit(name=name))
-            db.session.commit()
-            message = f"Hey, {name}! Visit recorded."
-
-    visits = Visit.query.order_by(Visit.visited_at.desc()).all()
-    hit_count = Visit.query.count()
-
-    return render_template(
-        "index.html",
-        date=datetime.now().strftime("%D"),
-        message=message,
-        hit_count=hit_count,
-        compliment=random.choice(compliments),
-        visits=visits
-    )
+    sp = get_spotify_client()
+    return render_template("index.html", logged_in=sp is not None)
 
 
 @app.route("/logout")
@@ -186,6 +136,9 @@ def spotify_playlists():
     while results:
         playlists.extend(results["items"])
         results = sp.next(results) if results["next"] else None
+
+    # Only show playlists with enough tracks to be useful for block mixing
+    playlists = [p for p in playlists if p["tracks"]["total"] >= 20]
 
     return render_template("spotify_playlists.html", playlists=playlists)
 
@@ -260,6 +213,88 @@ def spotify_build():
     )
 
 
+@app.route("/spotify/album-blaster")
+def album_blaster():
+    sp = get_spotify_client()
+    if not sp:
+        return redirect(url_for("spotify_login"))
+
+    playlists = []
+    results   = sp.current_user_playlists(limit=50)
+    while results:
+        playlists.extend(results["items"])
+        results = sp.next(results) if results["next"] else None
+
+    return render_template("spotify_album_blaster.html", playlists=playlists)
+
+
+@app.route("/spotify/album-blaster/<playlist_id>")
+def album_blaster_tracks(playlist_id):
+    sp = get_spotify_client()
+    if not sp:
+        return redirect(url_for("spotify_login"))
+
+    # Fetch playlist name
+    playlist = sp.playlist(playlist_id, fields="name")
+
+    # Fetch all tracks with album info
+    tracks  = []
+    results = sp.playlist_tracks(playlist_id, fields="next,items(track(id,name,artists(name),album(name)))")
+    while results:
+        for item in results["items"]:
+            if item["track"] and item["track"]["id"]:
+                tracks.append(item["track"])
+        results = sp.next(results) if results["next"] else None
+
+    return render_template("spotify_album_tracks.html", tracks=tracks, playlist=playlist)
+
+
+@app.route("/spotify/album-blast", methods=["POST"])
+def album_blast():
+    sp = get_spotify_client()
+    if not sp:
+        return redirect(url_for("spotify_login"))
+
+    track_ids = request.form.getlist("track_ids")
+
+    # Get album IDs from selected tracks — batch 50 at a time
+    seen_album_ids = set()
+    album_ids      = []
+    for i in range(0, len(track_ids), 50):
+        batch = sp.tracks(track_ids[i:i + 50])
+        for track in batch["tracks"]:
+            if track:
+                aid = track["album"]["id"]
+                if aid not in seen_album_ids:
+                    seen_album_ids.add(aid)
+                    album_ids.append((aid, track["album"]["name"]))
+
+    # Fetch all tracks from each album
+    track_uris  = []
+    album_names = []
+    for album_id, album_name in album_ids:
+        album_names.append(album_name)
+        results = sp.album_tracks(album_id)
+        while results:
+            track_uris.extend(item["uri"] for item in results["items"])
+            results = sp.next(results) if results["next"] else None
+
+    # Create new playlist and add tracks in batches of 100
+    user_id      = sp.me()["id"]
+    new_playlist = sp.user_playlist_create(
+        user_id, f"Album Blast {datetime.now().strftime('%m/%d %I:%M%p')}", public=False
+    )
+    for i in range(0, len(track_uris), 100):
+        sp.playlist_add_items(new_playlist["id"], track_uris[i:i + 100])
+
+    return render_template(
+        "spotify_album_blast_done.html",
+        playlist=new_playlist,
+        track_count=len(track_uris),
+        album_names=album_names
+    )
+
+
 @app.route("/spotify/manage")
 def spotify_manage():
     sp = get_spotify_client()
@@ -293,6 +328,17 @@ def spotify_preview(playlist_id):
     return {"tracks": tracks}
 
 
+@app.route("/spotify/toggle-visibility/<playlist_id>")
+def spotify_toggle_visibility(playlist_id):
+    sp = get_spotify_client()
+    if not sp:
+        return redirect(url_for("spotify_login"))
+
+    playlist = sp.playlist(playlist_id, fields="public")
+    sp.playlist_change_details(playlist_id, public=not playlist["public"])
+    return redirect(url_for("spotify_manage"))
+
+
 @app.route("/spotify/delete", methods=["POST"])
 def spotify_delete():
     sp = get_spotify_client()
@@ -306,9 +352,3 @@ def spotify_delete():
     return redirect(url_for("spotify_manage"))
 
 
-# ---------------------------------------------------------------
-# Init DB
-# ---------------------------------------------------------------
-
-with app.app_context():
-    db.create_all()
