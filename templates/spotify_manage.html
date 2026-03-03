@@ -81,10 +81,11 @@
               <button type="button" class="btn btn-outline-secondary btn-sm preview-btn"
                       data-id="{{ playlist.id }}">Preview</button>
               {% if playlist.owner.id == user_id %}
-                <a href="/spotify/toggle-visibility/{{ playlist.id }}"
-                   class="btn btn-sm {{ 'btn-outline-success' if playlist.public else 'btn-outline-secondary' }}">
-                  {{ '🔓 Make Private' if playlist.public else '🔒 Make Public' }}
-                </a>
+                <form method="POST" action="/spotify/toggle-visibility/{{ playlist.id }}">
+                  <button type="submit" class="btn btn-sm {{ 'btn-outline-success' if playlist.public else 'btn-outline-secondary' }}">
+                    {{ '🔓 Make Private' if playlist.public else '🔒 Make Public' }}
+                  </button>
+                </form>
               {% endif %}
             </td>
           </tr>
@@ -218,9 +219,18 @@
       fetch("/spotify/preview/" + id)
         .then(r => r.json())
         .then(data => {
-          content.innerHTML = data.tracks.length
-            ? data.tracks.map(t => `<div>• ${t}</div>`).join("")
-            : "<em>No tracks found</em>";
+          content.innerHTML = "";
+          if (data.tracks.length) {
+            data.tracks.forEach(t => {
+              const div = document.createElement("div");
+              div.textContent = "• " + t;  // textContent never executes scripts
+              content.appendChild(div);
+            });
+          } else {
+            const em = document.createElement("em");
+            em.textContent = "No tracks found";
+            content.appendChild(em);
+          }
           content.dataset.loaded = "1";
         });
     });

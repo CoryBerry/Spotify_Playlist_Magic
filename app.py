@@ -328,7 +328,7 @@ def spotify_preview(playlist_id):
     return {"tracks": tracks}
 
 
-@app.route("/spotify/toggle-visibility/<playlist_id>")
+@app.route("/spotify/toggle-visibility/<playlist_id>", methods=["POST"])
 def spotify_toggle_visibility(playlist_id):
     sp = get_spotify_client()
     if not sp:
