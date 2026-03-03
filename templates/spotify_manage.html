@@ -1,0 +1,238 @@
+{% extends "base.html" %}
+
+{% block title %}Manage Playlists{% endblock %}
+
+{% block content %}
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <h2>Manage Playlists <span class="text-muted fs-6">{{ playlists|length }} total</span></h2>
+  </div>
+  <p class="text-muted small">Playlists you <strong>own</strong> will be deleted. Playlists you <strong>follow</strong> will be removed from your library.</p>
+
+  <!-- Toolbar -->
+  <div class="row align-items-end mb-3 g-3">
+    <div class="col-md-4">
+      <input type="text" id="filterInput" class="form-control" placeholder="Filter by name...">
+    </div>
+    <div class="col-auto">
+      <select id="sortSelect" class="form-select">
+        <option value="recent">Recently Added</option>
+        <option value="az">A → Z</option>
+        <option value="za">Z → A</option>
+        <option value="most">Most Tracks</option>
+        <option value="least">Fewest Tracks</option>
+        <option value="owned">Owned First</option>
+      </select>
+    </div>
+    <div class="col-auto">
+      <span id="visibleCount" class="text-muted small"></span>
+    </div>
+    <div class="col-auto ms-auto">
+      <button type="button" id="selectAllBtn" class="btn btn-outline-secondary btn-sm">Select All Visible</button>
+      <button type="button" id="deleteBtn" class="btn btn-danger btn-sm ms-2" disabled>Delete Selected (<span id="selectedCount">0</span>)</button>
+    </div>
+  </div>
+
+  <!-- Table -->
+  <form id="deleteForm" method="POST" action="/spotify/delete">
+    <table class="table table-hover align-middle" id="playlistTable">
+      <thead class="table-dark">
+        <tr>
+          <th style="width: 40px;"></th>
+          <th>Name</th>
+          <th>Owner</th>
+          <th>Tracks</th>
+          <th>Visibility</th>
+          <th style="width: 80px;"></th>
+        </tr>
+      </thead>
+      <tbody id="playlistBody">
+        {% for playlist in playlists %}
+          <tr class="playlist-row"
+              data-name="{{ playlist.name | lower }}"
+              data-tracks="{{ playlist.tracks.total }}"
+              data-order="{{ loop.index }}"
+              data-owned="{{ '1' if playlist.owner.id == user_id else '0' }}">
+            <td>
+              <input class="form-check-input row-check" type="checkbox"
+                     name="playlist_ids" value="{{ playlist.id }}">
+            </td>
+            <td>
+              <span class="fw-bold">{{ playlist.name }}</span>
+              {% if playlist.tracks.total >= 500 %}
+                <span class="badge bg-warning text-dark ms-1">500+</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if playlist.owner.id == user_id %}
+                <span class="badge bg-primary">You</span>
+              {% else %}
+                <span class="text-muted small">{{ playlist.owner.display_name or playlist.owner.id }}</span>
+              {% endif %}
+            </td>
+            <td class="text-muted small">{{ playlist.tracks.total }}</td>
+            <td>
+              {% if playlist.public %}
+                <span class="text-muted small">Public</span>
+              {% else %}
+                <span class="text-muted small">Private</span>
+              {% endif %}
+            </td>
+            <td>
+              <button type="button" class="btn btn-outline-secondary btn-sm preview-btn"
+                      data-id="{{ playlist.id }}">Preview</button>
+            </td>
+          </tr>
+          <!-- Preview row — hidden until loaded -->
+          <tr class="preview-row d-none" id="preview-{{ playlist.id }}">
+            <td colspan="6" class="ps-4 text-muted small bg-light">
+              <span class="preview-content">Loading...</span>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </form>
+
+  <!-- Confirmation Modal -->
+  <div class="modal fade" id="confirmModal" tabindex="-1">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header bg-danger text-white">
+          <h5 class="modal-title">Confirm Deletion</h5>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <p>You are about to remove <strong id="modalCount"></strong> playlist(s):</p>
+          <ul id="modalList" class="small" style="max-height: 200px; overflow-y: auto;"></ul>
+          <p class="text-danger small mb-0">Owned playlists will be permanently deleted. Followed playlists will be removed from your library.</p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" id="confirmDeleteBtn" class="btn btn-danger">Yes, Delete</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    const body        = document.getElementById("playlistBody");
+    const filterInput = document.getElementById("filterInput");
+    const sortSelect  = document.getElementById("sortSelect");
+    const deleteBtn   = document.getElementById("deleteBtn");
+    const selectAllBtn = document.getElementById("selectAllBtn");
+    const selectedCount = document.getElementById("selectedCount");
+    const visibleCount  = document.getElementById("visibleCount");
+    const confirmModal  = new bootstrap.Modal(document.getElementById("confirmModal"));
+
+    function getRows() {
+      return [...body.querySelectorAll(".playlist-row")];
+    }
+
+    function updateCounts() {
+      const rows    = getRows();
+      const visible = rows.filter(r => !r.classList.contains("d-none")).length;
+      const checked = rows.filter(r => r.querySelector(".row-check").checked).length;
+      visibleCount.textContent  = visible + " shown";
+      selectedCount.textContent = checked;
+      deleteBtn.disabled        = checked === 0;
+    }
+
+    // Filter
+    filterInput.addEventListener("input", () => {
+      const term = filterInput.value.toLowerCase();
+      getRows().forEach(row => {
+        const hide = !row.dataset.name.includes(term);
+        row.classList.toggle("d-none", hide);
+        // also hide its preview row
+        const preview = document.getElementById("preview-" + row.querySelector(".row-check").value);
+        if (preview) preview.classList.toggle("d-none", hide);
+      });
+      updateCounts();
+    });
+
+    // Sort
+    sortSelect.addEventListener("change", () => {
+      const val  = sortSelect.value;
+      const rows = getRows();
+      rows.sort((a, b) => {
+        if (val === "az")    return a.dataset.name.localeCompare(b.dataset.name);
+        if (val === "za")    return b.dataset.name.localeCompare(a.dataset.name);
+        if (val === "most")  return b.dataset.tracks - a.dataset.tracks;
+        if (val === "least") return a.dataset.tracks - b.dataset.tracks;
+        if (val === "owned") return b.dataset.owned - a.dataset.owned;
+        return a.dataset.order - b.dataset.order;
+      });
+      rows.forEach(row => {
+        const preview = document.getElementById("preview-" + row.querySelector(".row-check").value);
+        body.appendChild(row);
+        if (preview) body.appendChild(preview);
+      });
+      updateCounts();
+    });
+
+    // Checkbox changes
+    body.addEventListener("change", e => {
+      if (e.target.classList.contains("row-check")) updateCounts();
+    });
+
+    // Select all visible
+    selectAllBtn.addEventListener("click", () => {
+      const visibleRows = getRows().filter(r => !r.classList.contains("d-none"));
+      const allChecked  = visibleRows.every(r => r.querySelector(".row-check").checked);
+      visibleRows.forEach(r => r.querySelector(".row-check").checked = !allChecked);
+      selectAllBtn.textContent = allChecked ? "Select All Visible" : "Deselect All";
+      updateCounts();
+    });
+
+    // Lazy preview load
+    body.addEventListener("click", e => {
+      const btn = e.target.closest(".preview-btn");
+      if (!btn) return;
+
+      const id      = btn.dataset.id;
+      const previewRow = document.getElementById("preview-" + id);
+      const content    = previewRow.querySelector(".preview-content");
+
+      // Toggle if already loaded
+      if (!previewRow.classList.contains("d-none")) {
+        previewRow.classList.add("d-none");
+        btn.textContent = "Preview";
+        return;
+      }
+
+      previewRow.classList.remove("d-none");
+      btn.textContent = "Hide";
+
+      // Only fetch if not already loaded
+      if (content.dataset.loaded) return;
+
+      fetch("/spotify/preview/" + id)
+        .then(r => r.json())
+        .then(data => {
+          content.innerHTML = data.tracks.length
+            ? data.tracks.map(t => `<div>• ${t}</div>`).join("")
+            : "<em>No tracks found</em>";
+          content.dataset.loaded = "1";
+        });
+    });
+
+    // Delete button → show modal
+    deleteBtn.addEventListener("click", () => {
+      const checked = getRows().filter(r => r.querySelector(".row-check").checked);
+      document.getElementById("modalCount").textContent = checked.length;
+      const list = document.getElementById("modalList");
+      list.innerHTML = checked.map(r => `<li>${r.querySelector(".fw-bold").textContent.trim()}</li>`).join("");
+      confirmModal.show();
+    });
+
+    // Confirm delete → submit form
+    document.getElementById("confirmDeleteBtn").addEventListener("click", () => {
+      document.getElementById("deleteForm").submit();
+    });
+
+    updateCounts();
+  </script>
+{% endblock %}

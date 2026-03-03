@@ -194,6 +194,52 @@ def spotify_build():
     return render_template("spotify_done.html", playlist=new_playlist, track_count=len(track_uris))
 
 
+@app.route("/spotify/manage")
+def spotify_manage():
+    sp = get_spotify_client()
+    if not sp:
+        return redirect(url_for("spotify_login"))
+
+    user_id   = sp.me()["id"]
+    playlists = []
+    results   = sp.current_user_playlists(limit=50)
+    while results:
+        playlists.extend(results["items"])
+        results = sp.next(results) if results["next"] else None
+
+    return render_template("spotify_manage.html", playlists=playlists, user_id=user_id)
+
+
+@app.route("/spotify/preview/<playlist_id>")
+def spotify_preview(playlist_id):
+    sp = get_spotify_client()
+    if not sp:
+        return {"error": "not authenticated"}, 401
+
+    results = sp.playlist_tracks(playlist_id, fields="items(track(name,artists(name)))", limit=5)
+    tracks  = []
+    for item in results["items"][:5]:
+        if item["track"]:
+            track  = item["track"]
+            artist = track["artists"][0]["name"] if track["artists"] else "Unknown"
+            tracks.append(f"{track['name']} — {artist}")
+
+    return {"tracks": tracks}
+
+
+@app.route("/spotify/delete", methods=["POST"])
+def spotify_delete():
+    sp = get_spotify_client()
+    if not sp:
+        return redirect(url_for("spotify_login"))
+
+    playlist_ids = request.form.getlist("playlist_ids")
+    for playlist_id in playlist_ids:
+        sp.current_user_unfollow_playlist(playlist_id)  # unfollow = delete for owned playlists
+
+    return redirect(url_for("spotify_manage"))
+
+
 # ---------------------------------------------------------------
 # Init DB
 # ---------------------------------------------------------------
