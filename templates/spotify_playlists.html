@@ -51,6 +51,12 @@
       </div>
     </div>
 
+    <!-- Mood filter — disabled, Spotify restricted audio-features API for new apps -->
+    <div class="mb-4">
+      <label class="form-label fw-bold d-block">Mood Filter <span class="badge bg-secondary ms-1">Unavailable</span></label>
+      <div class="text-muted small">Spotify restricted the audio features API for new apps in late 2024. Coming back when we get extended access.</div>
+    </div>
+
     <div class="row row-cols-1 row-cols-md-3 g-3 mb-4" id="playlistGrid">
       {% for playlist in playlists %}
         <div class="col playlist-card"
@@ -64,6 +70,7 @@
             <div class="card-body">
               <div class="form-check">
                 <input class="form-check-input" type="checkbox" name="playlist_ids" value="{{ playlist.id }}" id="pl_{{ playlist.id }}">
+                <input type="hidden" name="name_{{ playlist.id }}" value="{{ playlist.name }}">
                 <label class="form-check-label fw-bold" for="pl_{{ playlist.id }}">{{ playlist.name }}</label>
               </div>
               <p class="mt-1 mb-0 small">

@@ -7,7 +7,26 @@
     <h2>Playlist Created!</h2>
     <p class="lead">{{ playlist.name }}</p>
     <p class="text-muted">{{ track_count }} tracks added in blocks.</p>
-    <a href="{{ playlist.external_urls.spotify }}" class="btn btn-success me-2" target="_blank">Open in Spotify</a>
-    <a href="/spotify/playlists" class="btn btn-outline-secondary">Build Another</a>
+
+    {% if mood != "none" %}
+      <p class="text-muted small">Mood filter: <strong>{{ mood.title() }}</strong></p>
+    {% endif %}
+
+    {% if fallbacks %}
+      <div class="alert alert-warning d-inline-block text-start mt-2">
+        <strong>Note:</strong> The following playlists didn't have enough
+        <em>{{ mood }}</em> tracks and used their full library instead:
+        <ul class="mb-0 mt-1">
+          {% for name in fallbacks %}
+            <li>{{ name }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+
+    <div class="mt-4">
+      <a href="{{ playlist.external_urls.spotify }}" class="btn btn-success me-2" target="_blank">Open in Spotify</a>
+      <a href="/spotify/playlists" class="btn btn-outline-secondary">Build Another</a>
+    </div>
   </div>
 {% endblock %}

@@ -22,6 +22,41 @@ db = SQLAlchemy(app)
 
 
 # ---------------------------------------------------------------
+# Spotify mood presets — maps preset name to audio feature ranges
+# ---------------------------------------------------------------
+
+MOOD_PRESETS = {
+    "hype":       {"energy": (0.7, 1.0), "danceability": (0.6, 1.0)},
+    "chill":      {"energy": (0.0, 0.5), "acousticness": (0.4, 1.0)},
+    "happy":      {"valence": (0.6, 1.0), "energy": (0.4, 1.0)},
+    "melancholy": {"valence": (0.0, 0.4), "energy": (0.0, 0.5)},
+    "workout":    {"energy": (0.8, 1.0), "tempo": (120, 999)},
+    "focus":      {"instrumentalness": (0.3, 1.0), "speechiness": (0.0, 0.1)},
+}
+
+def fetch_audio_features(sp, track_uris):
+    """Batch fetch audio features for a list of track URIs. Returns dict keyed by track ID."""
+    track_ids    = [uri.split(":")[-1] for uri in track_uris]
+    features_map = {}
+    for i in range(0, len(track_ids), 100):  # Spotify allows 100 per request
+        batch = sp.audio_features(track_ids[i:i + 100])
+        for f in batch:
+            if f:  # can be None for local files / podcasts
+                features_map[f["id"]] = f
+    return features_map
+
+def filter_by_mood(track_uris, features_map, preset):
+    """Return tracks matching the mood preset. Falls back to full list if not enough match."""
+    rules    = MOOD_PRESETS.get(preset, {})
+    filtered = [
+        uri for uri in track_uris
+        if (f := features_map.get(uri.split(":")[-1]))
+        and all(lo <= f.get(key, 0) <= hi for key, (lo, hi) in rules.items())
+    ]
+    return filtered
+
+
+# ---------------------------------------------------------------
 # Spotify OAuth helper — builds an authenticated Spotify client
 # ---------------------------------------------------------------
 
@@ -161,16 +196,19 @@ def spotify_build():
     if not sp:
         return redirect(url_for("spotify_login"))
 
-    selected_ids = request.form.getlist("playlist_ids")  # list of checked playlist IDs
+    selected_ids = request.form.getlist("playlist_ids")
     block_size   = int(request.form.get("block_size", 4))
     repeats      = int(request.form.get("repeats", 1))
+    mood         = request.form.get("mood", "none")
 
     if len(selected_ids) < 2:
         return redirect(url_for("spotify_playlists"))
 
-    # Fetch all tracks for each playlist upfront — paginate to get the full pool
-    all_tracks = {}
+    # Fetch all tracks for each playlist — paginate to get the full pool
+    all_tracks     = {}
+    playlist_names = {}
     for playlist_id in selected_ids:
+        playlist_names[playlist_id] = request.form.get(f"name_{playlist_id}", playlist_id)
         tracks  = []
         results = sp.playlist_tracks(playlist_id, fields="next,items(track(uri))")
         while results:
@@ -178,20 +216,48 @@ def spotify_build():
             results = sp.next(results) if results["next"] else None
         all_tracks[playlist_id] = tracks
 
-    # Build the track list — each repeat cycles through all playlists picking a fresh random block
-    track_uris = []
+    # Mood filter disabled — Spotify restricted /audio-features for new apps in late 2024
+    fallbacks = []
+    mood      = "none"
+
+    # Randomize playlist order so blocks aren't always in the same sequence
+    random.shuffle(selected_ids)
+
+    # Cover art fix — Spotify generates a 2x2 grid from the first 4 tracks.
+    # Pull one track from each of the first 4 playlists so the cover art represents all genres.
+    cover_ids  = selected_ids[:4]
+    cover_uris = [random.choice(all_tracks[pid]) for pid in cover_ids if all_tracks[pid]]
+
+    # Build the main block list
+    block_uris = []
     for _ in range(repeats):
         for playlist_id in selected_ids:
             tracks = all_tracks[playlist_id]
             sample = random.sample(tracks, min(block_size, len(tracks)))
-            track_uris.extend(sample)
+            block_uris.extend(sample)
 
-    # Create a new playlist and add the tracks
+    # Prepend cover tracks, then blocks — exclude cover tracks from blocks to avoid dupes
+    cover_set  = set(cover_uris)
+    block_uris = [uri for uri in block_uris if uri not in cover_set]
+    track_uris = cover_uris + block_uris
+
+    # Create playlist — include mood in name if active
     user_id      = sp.me()["id"]
-    new_playlist = sp.user_playlist_create(user_id, f"Block Mix {datetime.now().strftime('%m/%d %I:%M%p')}", public=False)
-    sp.playlist_add_items(new_playlist["id"], track_uris)
+    mood_label   = f"{mood.title()} " if mood != "none" else ""
+    new_playlist = sp.user_playlist_create(
+        user_id, f"{mood_label}Block Mix {datetime.now().strftime('%m/%d %I:%M%p')}", public=False
+    )
+    # Add tracks in batches of 100 — Spotify's API limit per request
+    for i in range(0, len(track_uris), 100):
+        sp.playlist_add_items(new_playlist["id"], track_uris[i:i + 100])
 
-    return render_template("spotify_done.html", playlist=new_playlist, track_count=len(track_uris))
+    return render_template(
+        "spotify_done.html",
+        playlist=new_playlist,
+        track_count=len(track_uris),
+        mood=mood,
+        fallbacks=fallbacks
+    )
 
 
 @app.route("/spotify/manage")
