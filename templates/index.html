@@ -76,4 +76,41 @@
     </div>
 
   </div>
+
+  {% if plex_enabled %}
+  <h3 class="mt-5 mb-3 text-info">Plex Tools</h3>
+  <div class="row g-4">
+
+    <div class="col-md-4">
+      <div class="card h-100 border-info">
+        <div class="card-body">
+          <h4 class="card-title">🎵 Plex Block Mix</h4>
+          <p class="card-text text-muted">
+            Same block rotation concept as Spotify Block Mix, but pulling from your local
+            Plex playlists. Great for blending genres from your own library.
+          </p>
+        </div>
+        <div class="card-footer bg-transparent">
+          <a href="/plex/playlists" class="btn btn-info">Open Plex Mix</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-md-4">
+      <div class="card h-100 border-info">
+        <div class="card-body">
+          <h4 class="card-title">💥 Plex Album Blaster</h4>
+          <p class="card-text text-muted">
+            Browse a Plex playlist, pick tracks, and blast their full albums into a new
+            Plex playlist. Rediscover albums from your own collection.
+          </p>
+        </div>
+        <div class="card-footer bg-transparent">
+          <a href="/plex/album-blaster" class="btn btn-info">Open Plex Blaster</a>
+        </div>
+      </div>
+    </div>
+
+  </div>
+  {% endif %}
 {% endblock %}

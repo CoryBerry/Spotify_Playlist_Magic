@@ -2,3 +2,4 @@ flask
 flask-sqlalchemy
 spotipy
 python-dotenv
+plexapi          # optional — only needed if using Plex tools

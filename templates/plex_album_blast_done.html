@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block title %}Plex Album Blast Complete!{% endblock %}
+
+{% block content %}
+  <div class="text-center mt-5">
+    <h2>💥 Album Blast Complete!</h2>
+    <p class="lead">{{ playlist.title }}</p>
+    <p class="text-muted">{{ track_count }} tracks from {{ album_names|length }} albums.</p>
+
+    <div class="d-inline-block text-start mt-2 mb-4">
+      <ul class="list-unstyled">
+        {% for name in album_names %}
+          <li class="text-muted small">• {{ name }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+
+    <div>
+      <p class="text-muted small">Open PlexAmp or the Plex web app to find your new playlist.</p>
+      <a href="/plex/album-blaster" class="btn btn-info">Blast Another</a>
+      <a href="/" class="btn btn-outline-secondary ms-2">Home</a>
+    </div>
+  </div>
+{% endblock %}

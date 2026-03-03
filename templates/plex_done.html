@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+
+{% block title %}Plex Playlist Created!{% endblock %}
+
+{% block content %}
+  <div class="text-center mt-5">
+    <h2>Playlist Created!</h2>
+    <p class="lead">{{ playlist.title }}</p>
+    <p class="text-muted">{{ track_count }} tracks added in blocks.</p>
+    <p class="text-muted small">Open PlexAmp or the Plex web app to find your new playlist.</p>
+    <div class="mt-4">
+      <a href="/plex/playlists" class="btn btn-info">Build Another</a>
+      <a href="/" class="btn btn-outline-secondary ms-2">Home</a>
+    </div>
+  </div>
+{% endblock %}

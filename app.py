@@ -12,6 +12,12 @@ import os
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
+try:
+    from plexapi.server import PlexServer as _PlexServer
+    PLEX_AVAILABLE = True
+except ImportError:
+    PLEX_AVAILABLE = False
+
 load_dotenv()
 
 app = Flask(__name__)
@@ -134,6 +140,37 @@ def get_cached_playlists(sp, user_id):
     db.session.commit()
 
     return playlists, now, False
+
+
+# ---------------------------------------------------------------
+# Plex helpers
+# ---------------------------------------------------------------
+
+def get_plex():
+    """Return an authenticated PlexServer, or None if not configured/available."""
+    if not PLEX_AVAILABLE:
+        return None
+    url   = os.environ.get("PLEX_URL")
+    token = os.environ.get("PLEX_TOKEN")
+    if not url or not token:
+        return None
+    try:
+        return _PlexServer(url, token)
+    except Exception:
+        return None
+
+
+def get_plex_music(plex):
+    """Return the first music library section found on the server."""
+    for section in plex.library.sections():
+        if section.type == "artist":
+            return section
+    return None
+
+
+@app.context_processor
+def inject_plex_enabled():
+    return {"plex_enabled": bool(os.environ.get("PLEX_URL") and os.environ.get("PLEX_TOKEN"))}
 
 
 # ---------------------------------------------------------------
@@ -471,5 +508,129 @@ def cache_refresh():
         db.session.commit()
     next_url = request.args.get("next") or url_for("spotify_playlists")
     return redirect(next_url)
+
+
+# ---------------------------------------------------------------
+# Routes — Plex
+# ---------------------------------------------------------------
+
+def _plex_or_bust():
+    """Return a PlexServer or a redirect response. Caller checks type."""
+    plex = get_plex()
+    if not plex:
+        return None, redirect(url_for("plex_not_configured"))
+    return plex, None
+
+
+@app.route("/plex")
+def plex_index():
+    plex = get_plex()
+    if not plex:
+        return redirect(url_for("plex_not_configured"))
+    return redirect(url_for("plex_playlists"))
+
+
+@app.route("/plex/not-configured")
+def plex_not_configured():
+    return render_template("plex_not_configured.html")
+
+
+@app.route("/plex/playlists")
+def plex_playlists():
+    plex, err = _plex_or_bust()
+    if err:
+        return err
+
+    playlists = [p for p in plex.playlists()
+                 if p.playlistType == "audio" and p.leafCount >= 20]
+    return render_template("plex_playlists.html", playlists=playlists)
+
+
+@app.route("/plex/build", methods=["POST"])
+def plex_build():
+    plex, err = _plex_or_bust()
+    if err:
+        return err
+
+    selected_keys = request.form.getlist("playlist_ids")
+    block_size    = int(request.form.get("block_size", 4))
+    repeats       = int(request.form.get("repeats", 1))
+
+    if len(selected_keys) < 2:
+        return redirect(url_for("plex_playlists"))
+
+    # Fetch all tracks from each selected playlist
+    all_tracks = {}
+    for key in selected_keys:
+        playlist = plex.fetchItem(int(key))
+        all_tracks[key] = playlist.items()
+
+    random.shuffle(selected_keys)
+
+    block_tracks = []
+    for _ in range(repeats):
+        for key in selected_keys:
+            tracks = all_tracks[key]
+            sample = random.sample(tracks, min(block_size, len(tracks)))
+            block_tracks.extend(sample)
+
+    title        = f"Block Mix {datetime.now().strftime('%m/%d %I:%M%p')}"
+    new_playlist = plex.createPlaylist(title, items=block_tracks)
+
+    return render_template("plex_done.html", playlist=new_playlist, track_count=len(block_tracks))
+
+
+@app.route("/plex/album-blaster")
+def plex_album_blaster():
+    plex, err = _plex_or_bust()
+    if err:
+        return err
+
+    playlists = [p for p in plex.playlists() if p.playlistType == "audio"]
+    return render_template("plex_album_blaster.html", playlists=playlists)
+
+
+@app.route("/plex/album-blaster/<int:playlist_key>")
+def plex_album_blaster_tracks(playlist_key):
+    plex, err = _plex_or_bust()
+    if err:
+        return err
+
+    playlist = plex.fetchItem(playlist_key)
+    tracks   = [t for t in playlist.items() if t.type == "track"]
+    return render_template("plex_album_tracks.html", tracks=tracks, playlist=playlist)
+
+
+@app.route("/plex/album-blast", methods=["POST"])
+def plex_album_blast():
+    plex, err = _plex_or_bust()
+    if err:
+        return err
+
+    track_keys = [int(k) for k in request.form.getlist("track_ids")]
+
+    # Collect unique albums from the selected tracks
+    seen_album_keys = set()
+    albums          = []
+    for key in track_keys:
+        track = plex.fetchItem(key)
+        album = track.album()
+        if album.ratingKey not in seen_album_keys:
+            seen_album_keys.add(album.ratingKey)
+            albums.append(album)
+
+    all_tracks  = []
+    album_names = []
+    for album in albums:
+        album_names.append(album.title)
+        all_tracks.extend(album.tracks())
+
+    title        = f"Album Blast {datetime.now().strftime('%m/%d %I:%M%p')}"
+    new_playlist = plex.createPlaylist(title, items=all_tracks)
+
+    return render_template("plex_album_blast_done.html",
+                           playlist=new_playlist,
+                           track_count=len(all_tracks),
+                           album_names=album_names)
 
 

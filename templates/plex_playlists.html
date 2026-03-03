@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+
+{% block title %}Plex Block Mix{% endblock %}
+
+{% block content %}
+  <h2>Plex Block Mix</h2>
+  <p class="text-muted">Select 2 or more playlists and choose how many songs per block. {{ playlists|length }} playlists loaded.</p>
+
+  <form method="POST" action="/plex/build">
+
+    <!-- Sticky toolbar -->
+    <div class="sticky-top bg-light py-3 border-bottom mb-4" style="top: 56px; z-index: 100;">
+      <div class="row align-items-end g-3">
+        <div class="col-auto">
+          <label class="form-label fw-bold mb-1">Songs per block</label>
+          <select name="block_size" id="blockSize" class="form-select" style="width: 100px;">
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4" selected>4</option>
+            <option value="5">5</option>
+            <option value="6">6</option>
+          </select>
+        </div>
+        <div class="col-auto">
+          <label class="form-label fw-bold mb-1">Repeats</label>
+          <select name="repeats" id="repeats" class="form-select" style="width: 100px;">
+            <option value="1" selected>1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+            <option value="6">6</option>
+            <option value="7">7</option>
+            <option value="8">8</option>
+          </select>
+        </div>
+        <div class="col-auto">
+          <label class="form-label fw-bold mb-1">Sort</label>
+          <select id="sortSelect" class="form-select" style="width: 180px;">
+            <option value="recent">Recently Added</option>
+            <option value="az">A → Z</option>
+            <option value="za">Z → A</option>
+            <option value="most">Most Tracks</option>
+            <option value="least">Fewest Tracks</option>
+          </select>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label fw-bold mb-1">Filter</label>
+          <input type="text" id="playlistFilter" class="form-control" placeholder="Type to filter...">
+        </div>
+        <div class="col-auto">
+          <span id="visibleCount" class="text-muted small d-block"></span>
+        </div>
+        <div class="col-auto ms-auto text-end">
+          <div class="text-muted small mb-1" id="trackCountLabel">0 playlists selected</div>
+          <div class="fw-bold fs-5" id="trackCountTotal">— tracks</div>
+          <button type="submit" class="btn btn-info mt-2">Build Plex Playlist</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="row row-cols-1 row-cols-md-3 g-3 mb-4" id="playlistGrid">
+      {% for playlist in playlists %}
+        <div class="col playlist-card"
+             data-name="{{ playlist.title | lower }}"
+             data-tracks="{{ playlist.leafCount }}"
+             data-order="{{ loop.index }}">
+          <div class="card h-100 {% if playlist.leafCount >= 500 %}border-warning{% endif %}">
+            <div class="card-body">
+              <div class="form-check">
+                <input class="form-check-input playlist-check" type="checkbox"
+                       name="playlist_ids" value="{{ playlist.ratingKey }}" id="pl_{{ playlist.ratingKey }}">
+                <label class="form-check-label fw-bold" for="pl_{{ playlist.ratingKey }}">{{ playlist.title }}</label>
+              </div>
+              <p class="mt-1 mb-0 small">
+                {% if playlist.leafCount >= 500 %}
+                  <span class="text-warning fw-bold">{{ playlist.leafCount }} tracks</span>
+                {% else %}
+                  <span class="text-muted">{{ playlist.leafCount }} tracks</span>
+                {% endif %}
+              </p>
+            </div>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+
+  </form>
+
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    const grid       = document.getElementById("playlistGrid");
+    const filter     = document.getElementById("playlistFilter");
+    const sorter     = document.getElementById("sortSelect");
+    const counter    = document.getElementById("visibleCount");
+    const blockSizeEl = document.getElementById("blockSize");
+    const repeatsEl   = document.getElementById("repeats");
+    const trackLabel  = document.getElementById("trackCountLabel");
+    const trackTotal  = document.getElementById("trackCountTotal");
+
+    function getCards() {
+      return [...grid.querySelectorAll(".playlist-card")];
+    }
+
+    function updateTrackCount() {
+      const checked   = [...document.querySelectorAll(".playlist-check:checked")].length;
+      const blockSize = parseInt(blockSizeEl.value);
+      const repeats   = parseInt(repeatsEl.value);
+      const total     = checked * blockSize * repeats;
+      trackLabel.textContent = checked + " playlist" + (checked !== 1 ? "s" : "") + " selected";
+      trackTotal.textContent = checked > 0 ? total + " tracks" : "— tracks";
+    }
+
+    function applyFilter() {
+      const term = filter.value.toLowerCase();
+      getCards().forEach(card => {
+        card.style.display = card.dataset.name.includes(term) ? "" : "none";
+      });
+      updateCount();
+    }
+
+    function applySort() {
+      const val   = sorter.value;
+      const cards = getCards();
+      cards.sort((a, b) => {
+        if (val === "az")    return a.dataset.name.localeCompare(b.dataset.name);
+        if (val === "za")    return b.dataset.name.localeCompare(a.dataset.name);
+        if (val === "most")  return b.dataset.tracks - a.dataset.tracks;
+        if (val === "least") return a.dataset.tracks - b.dataset.tracks;
+        return a.dataset.order - b.dataset.order;
+      });
+      cards.forEach(card => grid.appendChild(card));
+      updateCount();
+    }
+
+    function updateCount() {
+      const visible = getCards().filter(c => c.style.display !== "none").length;
+      counter.textContent = visible + " shown";
+    }
+
+    filter.addEventListener("input", applyFilter);
+    sorter.addEventListener("change", () => { applySort(); applyFilter(); });
+    blockSizeEl.addEventListener("change", updateTrackCount);
+    repeatsEl.addEventListener("change", updateTrackCount);
+    grid.addEventListener("change", e => {
+      if (e.target.classList.contains("playlist-check")) updateTrackCount();
+    });
+
+    updateCount();
+    updateTrackCount();
+  </script>
+{% endblock %}

@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+
+{% block title %}Plex Not Configured{% endblock %}
+
+{% block content %}
+  <div class="mt-5 text-center">
+    <h2>Plex Not Configured</h2>
+    <p class="text-muted lead">Add your Plex server details to <code>.env</code> to enable Plex tools.</p>
+    <pre class="d-inline-block text-start bg-dark text-light p-3 rounded mt-3">PLEX_URL=http://localhost:32400
+PLEX_TOKEN=your_plex_token_here</pre>
+    <p class="text-muted mt-3 small">
+      Find your token: open Plex in a browser, play any item, inspect the network request URL —
+      look for <code>X-Plex-Token=...</code>.
+    </p>
+    <a href="/" class="btn btn-outline-secondary mt-2">Back to Home</a>
+  </div>
+{% endblock %}

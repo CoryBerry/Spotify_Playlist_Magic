@@ -15,7 +15,12 @@
         <a class="nav-link" href="/">Home</a>
         <a class="nav-link" href="/spotify">Block Mix</a>
         <a class="nav-link" href="/spotify/album-blaster">Album Blaster</a>
-        <a class="nav-link" href="/spotify/manage">Manage Playlists</a>
+        <a class="nav-link" href="/spotify/manage">Manage</a>
+        {% if plex_enabled %}
+          <span class="nav-link text-secondary" style="cursor:default;">|</span>
+          <a class="nav-link text-info" href="/plex/playlists">Plex Mix</a>
+          <a class="nav-link text-info" href="/plex/album-blaster">Plex Blast</a>
+        {% endif %}
         <a class="nav-link" href="/about">About</a>
         {% if session.spotify_token %}
           <a class="nav-link text-warning" href="/logout">Disconnect Spotify</a>
