@@ -70,6 +70,7 @@
           </div>
           <div class="text-muted small mb-1" id="trackCountLabel">0 playlists selected</div>
           <div class="fw-bold fs-5" id="trackCountTotal">— tracks</div>
+          <div class="text-muted small" id="timeEstimate"></div>
           <button type="submit" class="btn btn-success mt-2">Build Playlist</button>
         </div>
       </div>
@@ -159,6 +160,7 @@
     const repeatsEl        = document.getElementById("repeats");
     const trackLabel       = document.getElementById("trackCountLabel");
     const trackTotal       = document.getElementById("trackCountTotal");
+    const timeEstimate     = document.getElementById("timeEstimate");
     const pinIntervalGroup = document.getElementById("pinIntervalGroup");
     const pinIntervalEl    = document.getElementById("pinInterval");
 
@@ -197,6 +199,20 @@
 
       trackLabel.textContent = checks.length + " playlist" + (checks.length !== 1 ? "s" : "") + " selected";
       trackTotal.textContent = checks.length > 0 ? "~" + total + " tracks" : "— tracks";
+
+      if (total > 0) {
+        const mins    = total * 3.5;
+        const days    = Math.floor(mins / 1440);
+        const hours   = Math.floor((mins % 1440) / 60);
+        const minutes = Math.floor(mins % 60);
+        const parts   = [];
+        if (days)    parts.push(days    + " day"    + (days    !== 1 ? "s" : ""));
+        if (hours)   parts.push(hours   + " hour"   + (hours   !== 1 ? "s" : ""));
+        if (minutes) parts.push(minutes + " minute" + (minutes !== 1 ? "s" : ""));
+        timeEstimate.textContent = parts.join(", ");
+      } else {
+        timeEstimate.textContent = "";
+      }
     }
 
     function applyFilter() {
