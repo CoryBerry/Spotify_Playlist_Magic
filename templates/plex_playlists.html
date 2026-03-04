@@ -48,6 +48,15 @@
           <label class="form-label fw-bold mb-1">Filter</label>
           <input type="text" id="playlistFilter" class="form-control" placeholder="Type to filter...">
         </div>
+        <div class="col-auto" id="pinIntervalGroup" style="display:none">
+          <label class="form-label fw-bold mb-1">Pin every</label>
+          <select name="pin_interval" id="pinInterval" class="form-select" style="width: 120px;">
+            <option value="1">1 block</option>
+            <option value="2">2 blocks</option>
+            <option value="3">3 blocks</option>
+            <option value="4">4 blocks</option>
+          </select>
+        </div>
         <div class="col-auto">
           <span id="visibleCount" class="text-muted small d-block"></span>
         </div>
@@ -72,6 +81,20 @@
                        name="playlist_ids" value="{{ playlist.ratingKey }}" id="pl_{{ playlist.ratingKey }}">
                 <label class="form-check-label fw-bold" for="pl_{{ playlist.ratingKey }}">{{ playlist.title }}</label>
               </div>
+              <div class="playlist-controls mt-2" style="display:none">
+                <div class="d-flex gap-2 align-items-center flex-wrap">
+                  <label class="small text-muted mb-0">Weight</label>
+                  <select name="weight_{{ playlist.ratingKey }}" class="form-select form-select-sm weight-select" style="width: 65px;">
+                    <option value="1" selected>1×</option>
+                    <option value="2">2×</option>
+                    <option value="3">3×</option>
+                  </select>
+                  <div class="form-check mb-0 ms-1">
+                    <input class="form-check-input pin-radio" type="radio" name="pinned_playlist_id" value="{{ playlist.ratingKey }}" id="pin_{{ playlist.ratingKey }}">
+                    <label class="form-check-label small text-muted" for="pin_{{ playlist.ratingKey }}">Pin</label>
+                  </div>
+                </div>
+              </div>
               <p class="mt-1 mb-0 small">
                 {% if playlist.leafCount >= 500 %}
                   <span class="text-warning fw-bold">{{ playlist.leafCount }} tracks</span>
@@ -95,22 +118,47 @@
     const filter     = document.getElementById("playlistFilter");
     const sorter     = document.getElementById("sortSelect");
     const counter    = document.getElementById("visibleCount");
-    const blockSizeEl = document.getElementById("blockSize");
-    const repeatsEl   = document.getElementById("repeats");
-    const trackLabel  = document.getElementById("trackCountLabel");
-    const trackTotal  = document.getElementById("trackCountTotal");
+    const blockSizeEl      = document.getElementById("blockSize");
+    const repeatsEl        = document.getElementById("repeats");
+    const trackLabel       = document.getElementById("trackCountLabel");
+    const trackTotal       = document.getElementById("trackCountTotal");
+    const pinIntervalGroup = document.getElementById("pinIntervalGroup");
+    const pinIntervalEl    = document.getElementById("pinInterval");
 
     function getCards() {
       return [...grid.querySelectorAll(".playlist-card")];
     }
 
+    function getPinnedId() {
+      return document.querySelector(".pin-radio:checked")?.value || "";
+    }
+
+    function updatePinInterval() {
+      pinIntervalGroup.style.display = getPinnedId() ? "" : "none";
+    }
+
     function updateTrackCount() {
-      const checked   = [...document.querySelectorAll(".playlist-check:checked")].length;
+      const checks    = [...document.querySelectorAll(".playlist-check:checked")];
       const blockSize = parseInt(blockSizeEl.value);
       const repeats   = parseInt(repeatsEl.value);
-      const total     = checked * blockSize * repeats;
-      trackLabel.textContent = checked + " playlist" + (checked !== 1 ? "s" : "") + " selected";
-      trackTotal.textContent = checked > 0 ? total + " tracks" : "— tracks";
+      const pinnedId  = getPinnedId();
+
+      let weightSum = 0;
+      checks.forEach(cb => {
+        if (cb.value === pinnedId) return;
+        const weight = parseInt(cb.closest(".playlist-card").querySelector(".weight-select")?.value || 1);
+        weightSum += weight;
+      });
+
+      let total = weightSum * blockSize * repeats;
+      if (pinnedId && pinIntervalEl) {
+        const interval  = parseInt(pinIntervalEl.value);
+        const pinBlocks = Math.floor(weightSum * repeats / interval);
+        total += pinBlocks * blockSize;
+      }
+
+      trackLabel.textContent = checks.length + " playlist" + (checks.length !== 1 ? "s" : "") + " selected";
+      trackTotal.textContent = checks.length > 0 ? "~" + total + " tracks" : "— tracks";
     }
 
     function applyFilter() {
@@ -144,8 +192,38 @@
     sorter.addEventListener("change", () => { applySort(); applyFilter(); });
     blockSizeEl.addEventListener("change", updateTrackCount);
     repeatsEl.addEventListener("change", updateTrackCount);
+    pinIntervalEl.addEventListener("change", updateTrackCount);
+
     grid.addEventListener("change", e => {
-      if (e.target.classList.contains("playlist-check")) updateTrackCount();
+      const target = e.target;
+      if (target.classList.contains("playlist-check")) {
+        const card     = target.closest(".playlist-card");
+        const controls = card.querySelector(".playlist-controls");
+        controls.style.display = target.checked ? "" : "none";
+        if (!target.checked) {
+          card.querySelector(".weight-select").value = "1";
+          const pin = card.querySelector(".pin-radio");
+          if (pin.checked) { pin.checked = false; updatePinInterval(); }
+        }
+        updateTrackCount();
+      } else if (target.classList.contains("weight-select")) {
+        updateTrackCount();
+      }
+    });
+
+    // Allow clicking an already-selected pin radio to deselect it
+    grid.addEventListener("click", e => {
+      if (!e.target.classList.contains("pin-radio")) return;
+      const radio = e.target;
+      if (radio.dataset.wasChecked === "true") {
+        radio.checked = false;
+        radio.dataset.wasChecked = "false";
+      } else {
+        document.querySelectorAll(".pin-radio").forEach(r => r.dataset.wasChecked = "false");
+        radio.dataset.wasChecked = "true";
+      }
+      updatePinInterval();
+      updateTrackCount();
     });
 
     updateCount();

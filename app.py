@@ -256,6 +256,9 @@ def spotify_build():
     block_size   = int(request.form.get("block_size", 4))
     repeats      = int(request.form.get("repeats", 1))
     mood         = request.form.get("mood", "none")
+    pinned_id    = request.form.get("pinned_playlist_id", "").strip()
+    pin_interval = int(request.form.get("pin_interval", 1))
+    weights      = {pid: max(1, int(request.form.get(f"weight_{pid}", 1))) for pid in selected_ids}
 
     if len(selected_ids) < 2:
         return redirect(url_for("spotify_playlists"))
@@ -276,21 +279,30 @@ def spotify_build():
     fallbacks = []
     mood      = "none"
 
-    # Randomize playlist order so blocks aren't always in the same sequence
-    random.shuffle(selected_ids)
+    # Build weighted cycle from non-pinned playlists, then shuffle once
+    non_pinned = [pid for pid in selected_ids if pid != pinned_id]
+    cycle      = []
+    for pid in non_pinned:
+        cycle.extend([pid] * weights.get(pid, 1))
+    random.shuffle(cycle)
 
     # Cover art fix — Spotify generates a 2x2 grid from the first 4 tracks.
-    # Pull one track from each of the first 4 playlists so the cover art represents all genres.
-    cover_ids  = selected_ids[:4]
+    # Pull one track from each of the first 4 cycle playlists so cover art represents all genres.
+    cover_ids  = cycle[:4]
     cover_uris = [random.choice(all_tracks[pid]) for pid in cover_ids if all_tracks[pid]]
 
-    # Build the main block list
-    block_uris = []
+    # Build the main block list, inserting a pinned block every pin_interval non-pinned blocks
+    block_uris   = []
+    block_count  = 0
+    pinned_pool  = all_tracks.get(pinned_id, []) if pinned_id in all_tracks else []
     for _ in range(repeats):
-        for playlist_id in selected_ids:
+        for playlist_id in cycle:
             tracks = all_tracks[playlist_id]
             sample = random.sample(tracks, min(block_size, len(tracks)))
             block_uris.extend(sample)
+            block_count += 1
+            if pinned_pool and block_count % pin_interval == 0:
+                block_uris.extend(random.sample(pinned_pool, min(block_size, len(pinned_pool))))
 
     # Prepend cover tracks, then blocks — exclude cover tracks from blocks to avoid dupes
     cover_set  = set(cover_uris)
@@ -558,6 +570,9 @@ def plex_build():
     selected_keys = request.form.getlist("playlist_ids")
     block_size    = int(request.form.get("block_size", 4))
     repeats       = int(request.form.get("repeats", 1))
+    pinned_key    = request.form.get("pinned_playlist_id", "").strip()
+    pin_interval  = int(request.form.get("pin_interval", 1))
+    weights       = {k: max(1, int(request.form.get(f"weight_{k}", 1))) for k in selected_keys}
 
     if len(selected_keys) < 2:
         return redirect(url_for("plex_playlists"))
@@ -567,14 +582,24 @@ def plex_build():
     for key in selected_keys:
         all_tracks[key] = plex.fetchItems(f"/playlists/{key}/items")
 
-    random.shuffle(selected_keys)
+    # Build weighted cycle from non-pinned playlists, then shuffle once
+    non_pinned = [k for k in selected_keys if k != pinned_key]
+    cycle      = []
+    for k in non_pinned:
+        cycle.extend([k] * weights.get(k, 1))
+    random.shuffle(cycle)
 
     block_tracks = []
+    block_count  = 0
+    pinned_pool  = all_tracks.get(pinned_key, []) if pinned_key in all_tracks else []
     for _ in range(repeats):
-        for key in selected_keys:
+        for key in cycle:
             tracks = all_tracks[key]
             sample = random.sample(tracks, min(block_size, len(tracks)))
             block_tracks.extend(sample)
+            block_count += 1
+            if pinned_pool and block_count % pin_interval == 0:
+                block_tracks.extend(random.sample(pinned_pool, min(block_size, len(pinned_pool))))
 
     title        = f"Block Mix {_now_label()}"
     new_playlist = plex.createPlaylist(title, items=block_tracks)
@@ -637,4 +662,7 @@ def plex_album_blast():
                            track_count=len(all_tracks),
                            album_names=album_names)
 
+
+if __name__ == "__main__":
+    app.run(debug=True)
 
