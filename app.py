@@ -3,6 +3,7 @@
 # ---------------------------------------------------------------
 
 from flask import Flask, render_template, request, session, redirect, url_for, jsonify
+from urllib.parse import urlparse
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -28,7 +29,10 @@ def _date_label():
     return now.strftime('%b ') + str(now.day)  # e.g. "Mar 3"
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key")
+_secret_key = os.environ.get("SECRET_KEY")
+if not _secret_key:
+    raise RuntimeError("SECRET_KEY environment variable must be set")
+app.secret_key = _secret_key
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///spotify_tools.db"
 
 db = SQLAlchemy(app)
@@ -270,12 +274,12 @@ def spotify_build():
         return redirect(url_for("spotify_login"))
 
     selected_ids = request.form.getlist("playlist_ids")
-    block_size   = int(request.form.get("block_size", 4))
-    repeats      = int(request.form.get("repeats", 1))
+    block_size   = max(1, min(10, int(request.form.get("block_size", 4))))
+    repeats      = max(1, min(10, int(request.form.get("repeats", 1))))
     mood         = request.form.get("mood", "none")
     pinned_id    = request.form.get("pinned_playlist_id", "").strip()
-    pin_interval = int(request.form.get("pin_interval", 1))
-    weights      = {pid: max(1, int(request.form.get(f"weight_{pid}", 1))) for pid in selected_ids}
+    pin_interval = max(1, min(10, int(request.form.get("pin_interval", 1))))
+    weights      = {pid: max(1, min(5, int(request.form.get(f"weight_{pid}", 1)))) for pid in selected_ids}
 
     if len(selected_ids) < 2:
         return redirect(url_for("spotify_playlists"))
@@ -550,7 +554,10 @@ def cache_refresh():
     if cache:
         db.session.delete(cache)
         db.session.commit()
-    next_url = request.args.get("next") or url_for("spotify_playlists")
+    next_url = request.args.get("next", "")
+    # Reject absolute URLs (external redirects) — only allow internal paths
+    if not next_url or urlparse(next_url).scheme:
+        next_url = url_for("spotify_playlists")
     return redirect(next_url)
 
 
@@ -597,11 +604,11 @@ def plex_build():
         return err
 
     selected_keys = request.form.getlist("playlist_ids")
-    block_size    = int(request.form.get("block_size", 4))
-    repeats       = int(request.form.get("repeats", 1))
+    block_size    = max(1, min(10, int(request.form.get("block_size", 4))))
+    repeats       = max(1, min(10, int(request.form.get("repeats", 1))))
     pinned_key    = request.form.get("pinned_playlist_id", "").strip()
-    pin_interval  = int(request.form.get("pin_interval", 1))
-    weights       = {k: max(1, int(request.form.get(f"weight_{k}", 1))) for k in selected_keys}
+    pin_interval  = max(1, min(10, int(request.form.get("pin_interval", 1))))
+    weights       = {k: max(1, min(5, int(request.form.get(f"weight_{k}", 1)))) for k in selected_keys}
 
     if len(selected_keys) < 2:
         return redirect(url_for("plex_playlists"))
