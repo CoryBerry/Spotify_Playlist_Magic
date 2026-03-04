@@ -1,4 +1,4 @@
-# CLAUDE.md — Flask Learning Project
+# CLAUDE.md — Spotify Playlist Magic
 
 > Briefing file for Claude Code. Read this before touching anything.
 
@@ -6,44 +6,32 @@
 
 ## What this is
 
-A learning project: Python + Flask, coming from a ColdFusion background.
-Goal is to understand modern web dev patterns before building real apps (music app, etc.).
-
----
-
-## Mental model: CF → Flask/Python
-
-| ColdFusion concept | Flask/Python equivalent |
-|---|---|
-| `<cfquery>` | `Visit.query.filter_by(...).all()` |
-| `<cfinsert>` | `db.session.add(Visit(...)); db.session.commit()` |
-| `<cfset session.name = name>` | `session["name"] = name` |
-| Datasource | `SQLALCHEMY_DATABASE_URI` (currently SQLite) |
-| `<cfif>` / `<cfelse>` | `if` / `else` |
-| `<cfloop>` | `{% for x in items %}` in Jinja2 |
+A Flask web app for building and managing Spotify and Plex playlists in ways the official apps don't support. Originally a Python learning project, now a real shareable tool.
 
 ---
 
 ## Stack
 
 - **Framework:** Flask
-- **DB:** SQLAlchemy + SQLite (`instance/visits.db`)
+- **DB:** SQLAlchemy + SQLite (`instance/spotify_tools.db`)
 - **Templates:** Jinja2 (extends `base.html`)
 - **Frontend:** Bootstrap 5 (via CDN)
-- **Session:** Flask built-in (cookie-based, `secret_key` required)
+- **APIs:** Spotipy (Spotify OAuth), PlexAPI (token-based, optional)
 
 ---
 
-## Current app structure
+## App structure
 
 ```
-app.py              ← main app, routes, models, DB init
+app.py              ← all routes, models, helpers
 templates/
-  base.html         ← shared layout (Bootstrap, nav, blocks)
-  index.html        ← home page (form, visits table, compliment)
-  about.html        ← static about page
+  base.html         ← shared layout (Bootstrap, nav, cache footer)
+  spotify_*.html    ← Spotify tool pages
+  plex_*.html       ← Plex tool pages
+  recently_created.html
 instance/
-  visits.db         ← SQLite DB (auto-created, don't commit)
+  spotify_tools.db  ← SQLite DB (auto-created, don't commit)
+IDEAS.md            ← feature backlog
 ```
 
 ---
@@ -51,68 +39,32 @@ instance/
 ## Models
 
 ```python
-class Visit(db.Model):
-    id         = db.Column(db.Integer, primary_key=True)
-    name       = db.Column(db.String(100), nullable=False)
-    visited_at = db.Column(db.DateTime, default=datetime.now)
+PlaylistTag       # user-applied tags on Spotify playlists
+PlaylistCache     # 1-hour cache of Spotify playlist list
+CreatedPlaylist   # history of every Block Mix / Album Blast created
 ```
 
 ---
 
-## Routes
+## Key routes
 
-| Route | Methods | What it does |
-|---|---|---|
-| `/` | GET, POST | Home page. POST saves name to DB (with dupe check) |
-| `/logout` | GET | Clears session, redirects to home |
-| `/about` | GET | Static about page |
-
----
-
-## Key patterns learned so far
-
-**Duplicate check before insert:**
-```python
-existing = Visit.query.filter_by(name=name).first()  # SELECT TOP 1 WHERE name = ?
-if existing:
-    message = f"{name} is already in the list."
-else:
-    db.session.add(Visit(name=name))
-    db.session.commit()
-```
-
-**Passing data to templates:**
-```python
-return render_template("index.html",
-    date=datetime.now().strftime("%D"),
-    message=message,
-    visits=visits,
-    compliment=random.choice(compliments)
-)
-```
-
-**DB init (runs on startup):**
-```python
-with app.app_context():
-    db.create_all()
-```
-
----
-
-## Things NOT done yet (next steps)
-
-- [ ] User auth (login / signup with password hashing)
-- [ ] `redirect()` after POST (prevent form resubmit on refresh)
-- [ ] Flash messages (cleaner than passing `message` manually)
-- [ ] Multiple models with relationships
-- [ ] File uploads
-- [ ] Blueprints (when app gets bigger)
+| Route | What it does |
+|---|---|
+| `/spotify/playlists` | Block Mix — select playlists, build interleaved playlist |
+| `/spotify/album-blaster` | Album Blaster — pick tracks, blast full albums into new playlist |
+| `/spotify/manage` | Manage playlists — filter, tag, delete, toggle visibility |
+| `/spotify/stats/<id>` | Track count, runtime, unique artists for a playlist |
+| `/recently-created` | History of created playlists with alive/deleted status |
+| `/plex/playlists` | Plex Block Mix |
+| `/plex/album-blaster` | Plex Album Blaster |
+| `/plex/stats/<key>` | Plex playlist stats |
 
 ---
 
 ## Conventions / preferences
 
-- Comments explain the CF equivalent where helpful
-- Keep it simple — this is a learning project, not production
-- SQLite is fine for now; Postgres later when needed
-- Don't over-engineer; explain tradeoffs when suggesting changes
+- Keep it simple — avoid over-engineering
+- Both Spotify and Plex tools share the same patterns; changes to Block Mix logic usually apply to both
+- All form inputs that feed API calls or loops should be bounds-checked
+- `user_id = "local"` throughout — single-user personal app by design
+- SQLite is fine; no plans to move to Postgres
