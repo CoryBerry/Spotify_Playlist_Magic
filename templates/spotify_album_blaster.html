@@ -6,20 +6,42 @@
   <h2>Album Blaster</h2>
   <p class="text-muted">Pick a playlist to browse its tracks, then select songs to blast their full albums into a new playlist.</p>
 
-  <div class="row mb-3">
-    <div class="col-md-4">
+  <div class="row align-items-center mb-2 g-3">
+    <div class="col-auto">
+      <select id="sortSelect" class="form-select" style="width: 180px;">
+        <option value="recent">Recently Added</option>
+        <option value="az">A → Z</option>
+        <option value="za">Z → A</option>
+        <option value="most">Most Tracks</option>
+        <option value="least">Fewest Tracks</option>
+      </select>
+    </div>
+    <div class="col-md-3">
       <input type="text" id="filterInput" class="form-control" placeholder="Filter playlists...">
     </div>
     <div class="col-auto">
-      <span id="visibleCount" class="text-muted small mt-2 d-inline-block"></span>
+      <span id="visibleCount" class="text-muted small"></span>
     </div>
   </div>
+
+  {% if all_tags %}
+  <div class="mb-3 d-flex flex-wrap gap-2 align-items-center">
+    <span class="fw-bold small me-1">Tags:</span>
+    <button type="button" class="btn btn-sm btn-secondary tag-filter-btn active" data-tag="">All</button>
+    {% for tag in all_tags %}
+      <button type="button" class="btn btn-sm btn-outline-info tag-filter-btn" data-tag="{{ tag }}">{{ tag }}</button>
+    {% endfor %}
+  </div>
+  {% endif %}
 
   <div class="list-group" id="playlistList">
     {% for playlist in playlists %}
       <a href="/spotify/album-blaster/{{ playlist.id }}"
          class="list-group-item list-group-item-action playlist-row"
-         data-name="{{ playlist.name | lower }}">
+         data-name="{{ playlist.name | lower }}"
+         data-tracks="{{ playlist.tracks.total }}"
+         data-order="{{ loop.index }}"
+         data-tags="{{ tag_map.get(playlist.id, []) | join(',') | lower }}">
         <div class="d-flex justify-content-between align-items-start">
           <div>
             <span class="fw-bold">{{ playlist.name }}</span>
@@ -43,22 +65,55 @@
 
 {% block scripts %}
   <script>
+    const list   = document.getElementById("playlistList");
     const filter = document.getElementById("filterInput");
-    const rows   = document.querySelectorAll(".playlist-row");
+    const sorter = document.getElementById("sortSelect");
     const count  = document.getElementById("visibleCount");
+    let activeTag = "";
 
-    function update() {
-      const term    = filter.value.toLowerCase();
-      let   visible = 0;
-      rows.forEach(row => {
-        const show = row.dataset.name.includes(term);
+    function getRows() {
+      return [...list.querySelectorAll(".playlist-row")];
+    }
+
+    function applyFilter() {
+      const term = filter.value.toLowerCase();
+      let visible = 0;
+      getRows().forEach(row => {
+        const nameMatch = row.dataset.name.includes(term);
+        const tagMatch  = !activeTag || row.dataset.tags.split(",").includes(activeTag);
+        const show = nameMatch && tagMatch;
         row.classList.toggle("d-none", !show);
         if (show) visible++;
       });
       count.textContent = visible + " shown";
     }
 
-    filter.addEventListener("input", update);
-    update();
+    function applySort() {
+      const val  = sorter.value;
+      const rows = getRows();
+      rows.sort((a, b) => {
+        if (val === "az")    return a.dataset.name.localeCompare(b.dataset.name);
+        if (val === "za")    return b.dataset.name.localeCompare(a.dataset.name);
+        if (val === "most")  return b.dataset.tracks - a.dataset.tracks;
+        if (val === "least") return a.dataset.tracks - b.dataset.tracks;
+        return a.dataset.order - b.dataset.order;
+      });
+      rows.forEach(row => list.appendChild(row));
+      applyFilter();
+    }
+
+    filter.addEventListener("input", applyFilter);
+    sorter.addEventListener("change", applySort);
+
+    document.querySelectorAll(".tag-filter-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".tag-filter-btn").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        activeTag = btn.dataset.tag;
+        applyFilter();
+      });
+    });
+
+    applyFilter();
   </script>
 {% endblock %}

@@ -366,8 +366,11 @@ def album_blaster():
     for t in all_tags:
         tag_map.setdefault(t.playlist_id, []).append(t.tag)
 
+    all_tag_names = sorted({t.tag for t in all_tags})
+
     return render_template("spotify_album_blaster.html", playlists=playlists, user_id=user_id,
-                           tag_map=tag_map, cache_updated_at=cache_updated_at,
+                           tag_map=tag_map, all_tags=all_tag_names,
+                           cache_updated_at=cache_updated_at,
                            cache_refresh_url=url_for("cache_refresh") + "?next=" + request.path)
 
 
