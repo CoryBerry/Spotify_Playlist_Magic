@@ -1,4 +1,4 @@
-# Spotify Tools
+# Spotify Playlist Magic
 
 A personal Flask web app for building and managing Spotify playlists in ways the official app doesn't support. Optionally also works with Plex.
 
