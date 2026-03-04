@@ -307,10 +307,13 @@ def spotify_build():
         cycle.extend([pid] * weights.get(pid, 1))
     random.shuffle(cycle)
 
-    # Cover art fix — Spotify generates a 2x2 grid from the first 4 tracks.
-    # Pull one track from each of the first 4 cycle playlists so cover art represents all genres.
-    cover_ids  = cycle[:4]
-    cover_uris = [random.choice(all_tracks[pid]) for pid in cover_ids if all_tracks[pid]]
+    # Cover art: Spotify generates a 2x2 grid from the first 4 tracks.
+    # Optionally seed one track from each of the first 4 playlists so the cover represents all genres.
+    seed_cover = request.form.get("cover_art") == "on"
+    cover_uris = []
+    if seed_cover:
+        cover_ids  = cycle[:4]
+        cover_uris = [random.choice(all_tracks[pid]) for pid in cover_ids if all_tracks[pid]]
 
     # Build the main block list, inserting a pinned block every pin_interval non-pinned blocks
     block_uris   = []
@@ -325,7 +328,7 @@ def spotify_build():
             if pinned_pool and block_count % pin_interval == 0:
                 block_uris.extend(random.sample(pinned_pool, min(block_size, len(pinned_pool))))
 
-    # Prepend cover tracks, then blocks — exclude cover tracks from blocks to avoid dupes
+    # Prepend cover tracks and remove them from the block list to avoid dupes
     cover_set  = set(cover_uris)
     block_uris = [uri for uri in block_uris if uri not in cover_set]
     track_uris = cover_uris + block_uris

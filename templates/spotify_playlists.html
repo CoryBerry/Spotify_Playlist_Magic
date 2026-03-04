@@ -63,6 +63,10 @@
         <div class="col-auto ms-auto text-end">
           <input type="text" name="playlist_prefix" class="form-control form-control-sm mb-2"
                  placeholder="Playlist name (optional)" style="width: 220px;">
+          <div class="form-check form-check-inline justify-content-end mb-1" title="Spotify builds cover art from the first 4 tracks. When enabled, one track from each of the first 4 playlists is placed at the top so the cover represents all genres. Disable for a pure random block order.">
+            <input class="form-check-input" type="checkbox" name="cover_art" id="coverArt" checked>
+            <label class="form-check-label small text-muted" for="coverArt">Seed cover art <span class="text-muted">(?)</span></label>
+          </div>
           <div class="text-muted small mb-1" id="trackCountLabel">0 playlists selected</div>
           <div class="fw-bold fs-5" id="trackCountTotal">— tracks</div>
           <button type="submit" class="btn btn-success mt-2">Build Playlist</button>
@@ -124,6 +128,9 @@
                   <span class="text-muted"> · by {{ playlist.owner.display_name or playlist.owner.id }}</span>
                 {% endif %}
               </p>
+              {% if playlist.description %}
+                <p class="mt-1 mb-0 small text-muted">{{ playlist.description }}</p>
+              {% endif %}
               {% if tag_map.get(playlist.id) %}
                 <div class="mt-2 d-flex flex-wrap gap-1">
                   {% for tag in tag_map.get(playlist.id, []) %}
