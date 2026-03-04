@@ -59,6 +59,7 @@
         </div>
         <div class="col-auto">
           <span id="visibleCount" class="text-muted small d-block"></span>
+          <button type="button" id="reviewBtn" class="btn btn-outline-secondary btn-sm mt-1">Review Selected</button>
         </div>
         <div class="col-auto ms-auto text-end">
           <input type="text" name="playlist_prefix" class="form-control form-control-sm mb-2"
@@ -278,5 +279,31 @@
 
     updateCount();
     updateTrackCount();
+
+    // Review mode — show only checked playlists
+    let reviewMode = false;
+    const reviewBtn = document.getElementById("reviewBtn");
+
+    reviewBtn.addEventListener("click", () => {
+      reviewMode = !reviewMode;
+      if (reviewMode) {
+        // Reset tag filter to All
+        document.querySelectorAll(".tag-filter-btn").forEach(b => b.classList.remove("active"));
+        document.querySelector('.tag-filter-btn[data-tag=""]').classList.add("active");
+        activeTag = "";
+        filter.value = "";
+        // Show only checked cards
+        getCards().forEach(card => {
+          card.style.display = card.querySelector(".playlist-check")?.checked ? "" : "none";
+        });
+        reviewBtn.textContent = "Show All";
+        reviewBtn.classList.replace("btn-outline-secondary", "btn-warning");
+      } else {
+        reviewBtn.textContent = "Review Selected";
+        reviewBtn.classList.replace("btn-warning", "btn-outline-secondary");
+        applyFilter();
+      }
+      updateCount();
+    });
   </script>
 {% endblock %}
