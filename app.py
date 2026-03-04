@@ -20,6 +20,9 @@ except ImportError:
 
 load_dotenv()
 
+def _now_label():
+    return datetime.now().strftime('%m/%d %I:%M%p')
+
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key")
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///spotify_tools.db"
@@ -146,31 +149,28 @@ def get_cached_playlists(sp, user_id):
 # Plex helpers
 # ---------------------------------------------------------------
 
+PLEX_MIN_TRACKS = 20   # minimum tracks for a playlist to appear in Block Mix
+
+_plex_configured = bool(os.environ.get("PLEX_URL") and os.environ.get("PLEX_TOKEN"))
+_plex_instance   = None
+
 def get_plex():
-    """Return an authenticated PlexServer, or None if not configured/available."""
-    if not PLEX_AVAILABLE:
+    """Return a cached PlexServer, or None if not configured/available."""
+    global _plex_instance
+    if not PLEX_AVAILABLE or not _plex_configured:
         return None
-    url   = os.environ.get("PLEX_URL")
-    token = os.environ.get("PLEX_TOKEN")
-    if not url or not token:
-        return None
+    if _plex_instance is not None:
+        return _plex_instance
     try:
-        return _PlexServer(url, token)
+        _plex_instance = _PlexServer(os.environ["PLEX_URL"], os.environ["PLEX_TOKEN"])
+        return _plex_instance
     except Exception:
         return None
 
 
-def get_plex_music(plex):
-    """Return the first music library section found on the server."""
-    for section in plex.library.sections():
-        if section.type == "artist":
-            return section
-    return None
-
-
 @app.context_processor
 def inject_plex_enabled():
-    return {"plex_enabled": bool(os.environ.get("PLEX_URL") and os.environ.get("PLEX_TOKEN"))}
+    return {"plex_enabled": _plex_configured}
 
 
 # ---------------------------------------------------------------
@@ -242,7 +242,8 @@ def spotify_playlists():
 
     return render_template("spotify_playlists.html", playlists=playlists, tag_map=tag_map,
                            all_tags=all_tag_names, user_id=user_id,
-                           cache_updated_at=cache_updated_at)
+                           cache_updated_at=cache_updated_at,
+                           cache_refresh_url=url_for("cache_refresh") + "?next=" + request.path)
 
 
 @app.route("/spotify/build", methods=["POST"])
@@ -300,7 +301,7 @@ def spotify_build():
     user_id      = sp.me()["id"]
     mood_label   = f"{mood.title()} " if mood != "none" else ""
     new_playlist = sp.user_playlist_create(
-        user_id, f"{mood_label}Block Mix {datetime.now().strftime('%m/%d %I:%M%p')}", public=False
+        user_id, f"{mood_label}Block Mix {_now_label()}", public=False
     )
     # Add tracks in batches of 100 — Spotify's API limit per request
     for i in range(0, len(track_uris), 100):
@@ -330,7 +331,8 @@ def album_blaster():
         tag_map.setdefault(t.playlist_id, []).append(t.tag)
 
     return render_template("spotify_album_blaster.html", playlists=playlists, user_id=user_id,
-                           tag_map=tag_map, cache_updated_at=cache_updated_at)
+                           tag_map=tag_map, cache_updated_at=cache_updated_at,
+                           cache_refresh_url=url_for("cache_refresh") + "?next=" + request.path)
 
 
 @app.route("/spotify/album-blaster/<playlist_id>")
@@ -387,7 +389,7 @@ def album_blast():
     # Create new playlist and add tracks in batches of 100
     user_id      = sp.me()["id"]
     new_playlist = sp.user_playlist_create(
-        user_id, f"Album Blast {datetime.now().strftime('%m/%d %I:%M%p')}", public=False
+        user_id, f"Album Blast {_now_label()}", public=False
     )
     for i in range(0, len(track_uris), 100):
         sp.playlist_add_items(new_playlist["id"], track_uris[i:i + 100])
@@ -452,7 +454,8 @@ def spotify_manage():
         tag_map.setdefault(t.playlist_id, []).append(t.tag)
 
     return render_template("spotify_manage.html", playlists=playlists, user_id=user_id,
-                           tag_map=tag_map, cache_updated_at=cache_updated_at)
+                           tag_map=tag_map, cache_updated_at=cache_updated_at,
+                           cache_refresh_url=url_for("cache_refresh") + "?next=" + request.path)
 
 
 @app.route("/spotify/preview/<playlist_id>")
@@ -524,9 +527,9 @@ def _plex_or_bust():
 
 @app.route("/plex")
 def plex_index():
-    plex = get_plex()
-    if not plex:
-        return redirect(url_for("plex_not_configured"))
+    _, err = _plex_or_bust()
+    if err:
+        return err
     return redirect(url_for("plex_playlists"))
 
 
@@ -542,7 +545,7 @@ def plex_playlists():
         return err
 
     playlists = [p for p in plex.playlists()
-                 if p.playlistType == "audio" and p.leafCount >= 20]
+                 if p.playlistType == "audio" and p.leafCount >= PLEX_MIN_TRACKS]
     return render_template("plex_playlists.html", playlists=playlists)
 
 
@@ -559,11 +562,10 @@ def plex_build():
     if len(selected_keys) < 2:
         return redirect(url_for("plex_playlists"))
 
-    # Fetch all tracks from each selected playlist
+    # Fetch all tracks from each selected playlist — skip fetchItem, go direct to items endpoint
     all_tracks = {}
     for key in selected_keys:
-        playlist = plex.fetchItem(int(key))
-        all_tracks[key] = playlist.items()
+        all_tracks[key] = plex.fetchItems(f"/playlists/{key}/items")
 
     random.shuffle(selected_keys)
 
@@ -574,7 +576,7 @@ def plex_build():
             sample = random.sample(tracks, min(block_size, len(tracks)))
             block_tracks.extend(sample)
 
-    title        = f"Block Mix {datetime.now().strftime('%m/%d %I:%M%p')}"
+    title        = f"Block Mix {_now_label()}"
     new_playlist = plex.createPlaylist(title, items=block_tracks)
 
     return render_template("plex_done.html", playlist=new_playlist, track_count=len(block_tracks))
@@ -609,23 +611,25 @@ def plex_album_blast():
 
     track_keys = [int(k) for k in request.form.getlist("track_ids")]
 
-    # Collect unique albums from the selected tracks
+    # Batch-fetch all selected tracks in one API call, then read parentRatingKey directly
+    # from each track object — avoids N*2 sequential calls (fetchItem + album() per track)
+    tracks          = plex.fetchItems(track_keys)
     seen_album_keys = set()
-    albums          = []
-    for key in track_keys:
-        track = plex.fetchItem(key)
-        album = track.album()
-        if album.ratingKey not in seen_album_keys:
-            seen_album_keys.add(album.ratingKey)
-            albums.append(album)
+    album_keys      = []
+    for track in tracks:
+        if track.parentRatingKey not in seen_album_keys:
+            seen_album_keys.add(track.parentRatingKey)
+            album_keys.append(track.parentRatingKey)
 
+    # Batch-fetch all unique albums in one more API call
+    albums      = plex.fetchItems(album_keys)
     all_tracks  = []
     album_names = []
     for album in albums:
         album_names.append(album.title)
         all_tracks.extend(album.tracks())
 
-    title        = f"Album Blast {datetime.now().strftime('%m/%d %I:%M%p')}"
+    title        = f"Album Blast {_now_label()}"
     new_playlist = plex.createPlaylist(title, items=all_tracks)
 
     return render_template("plex_album_blast_done.html",

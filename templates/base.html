@@ -36,7 +36,7 @@
   {% if cache_updated_at %}
   <footer class="border-top mt-5 py-3 text-center text-muted small">
     Playlist data cached &middot; Updated <span id="cacheAge"></span>
-    &middot; <a href="/spotify/cache/refresh?next={{ request.path }}" class="text-muted">Refresh now</a>
+    &middot; <a href="{{ cache_refresh_url }}" class="text-muted">Refresh now</a>
     <script>
       (function() {
         const updated = new Date("{{ cache_updated_at.strftime('%Y-%m-%dT%H:%M:%S') }}");
