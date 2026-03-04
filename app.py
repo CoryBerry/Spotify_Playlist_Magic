@@ -71,8 +71,36 @@ class CreatedPlaylist(db.Model):
     checked_at  = db.Column(db.DateTime,   nullable=True)
 
 
+class PlaylistUsage(db.Model):
+    id          = db.Column(db.Integer, primary_key=True)
+    playlist_id = db.Column(db.String(100), nullable=False)
+    provider    = db.Column(db.String(20),  nullable=False)  # "spotify" or "plex"
+    use_count   = db.Column(db.Integer,     default=1, nullable=False)
+    last_used   = db.Column(db.DateTime,    default=datetime.now)
+
+    __table_args__ = (db.UniqueConstraint("playlist_id", "provider"),)
+
+
+class TrackHistory(db.Model):
+    id       = db.Column(db.Integer, primary_key=True)
+    track_id = db.Column(db.String(200), nullable=False)  # URI for Spotify, ratingKey for Plex
+    provider = db.Column(db.String(20),  nullable=False)
+    used_at  = db.Column(db.DateTime,    default=datetime.now)
+
+
 with app.app_context():
     db.create_all()
+
+
+def _record_usage(playlist_ids, provider):
+    for pid in playlist_ids:
+        rec = PlaylistUsage.query.filter_by(playlist_id=pid, provider=provider).first()
+        if rec:
+            rec.use_count += 1
+            rec.last_used  = datetime.now()
+        else:
+            db.session.add(PlaylistUsage(playlist_id=pid, provider=provider))
+    db.session.commit()
 
 
 # ---------------------------------------------------------------
@@ -261,10 +289,14 @@ def spotify_playlists():
 
     all_tag_names = sorted({t.tag for t in all_tags})
 
+    usage_records    = PlaylistUsage.query.filter_by(provider="spotify").all()
+    usage_map_count  = {r.playlist_id: r.use_count for r in usage_records}
+
     return render_template("spotify_playlists.html", playlists=playlists, tag_map=tag_map,
                            all_tags=all_tag_names, user_id=user_id,
                            cache_updated_at=cache_updated_at,
-                           cache_refresh_url=url_for("cache_refresh") + "?next=" + request.path)
+                           cache_refresh_url=url_for("cache_refresh") + "?next=" + request.path,
+                           usage_map_count=usage_map_count)
 
 
 @app.route("/spotify/build", methods=["POST"])
@@ -300,6 +332,16 @@ def spotify_build():
     fallbacks = []
     mood      = "none"
 
+    # 7-day cooldown: exclude tracks used in recent builds; fall back to full pool if too few remain
+    week_ago     = datetime.now() - timedelta(days=7)
+    on_cooldown  = {r.track_id for r in TrackHistory.query.filter(
+        TrackHistory.provider == "spotify",
+        TrackHistory.used_at  >= week_ago
+    ).all()}
+    for pid in list(all_tracks):
+        fresh = [t for t in all_tracks[pid] if t not in on_cooldown]
+        all_tracks[pid] = fresh if len(fresh) >= block_size else all_tracks[pid]
+
     # Build weighted cycle from non-pinned playlists, then shuffle once
     non_pinned = [pid for pid in selected_ids if pid != pinned_id]
     cycle      = []
@@ -328,10 +370,16 @@ def spotify_build():
             if pinned_pool and block_count % pin_interval == 0:
                 block_uris.extend(random.sample(pinned_pool, min(block_size, len(pinned_pool))))
 
-    # Prepend cover tracks and remove them from the block list to avoid dupes
+    # Prepend cover tracks, remove them from block list, then deduplicate preserving order
     cover_set  = set(cover_uris)
     block_uris = [uri for uri in block_uris if uri not in cover_set]
-    track_uris = cover_uris + block_uris
+    seen       = set(cover_uris)
+    deduped    = []
+    for uri in block_uris:
+        if uri not in seen:
+            seen.add(uri)
+            deduped.append(uri)
+    track_uris = cover_uris + deduped
 
     # Create playlist
     user_id        = sp.me()["id"]
@@ -350,6 +398,12 @@ def spotify_build():
         provider="spotify",
         url=new_playlist["external_urls"]["spotify"]
     ))
+    db.session.commit()
+
+    _record_usage(selected_ids, "spotify")
+
+    for uri in track_uris:
+        db.session.add(TrackHistory(track_id=uri, provider="spotify"))
     db.session.commit()
 
     return render_template("spotify_done.html", playlist=new_playlist, track_count=len(track_uris))
@@ -600,7 +654,11 @@ def plex_playlists():
 
     playlists = [p for p in plex.playlists()
                  if p.playlistType == "audio" and p.leafCount >= PLEX_MIN_TRACKS]
-    return render_template("plex_playlists.html", playlists=playlists)
+
+    usage_records   = PlaylistUsage.query.filter_by(provider="plex").all()
+    usage_map_count = {r.playlist_id: r.use_count for r in usage_records}
+
+    return render_template("plex_playlists.html", playlists=playlists, usage_map_count=usage_map_count)
 
 
 @app.route("/plex/build", methods=["POST"])
@@ -624,6 +682,16 @@ def plex_build():
     for key in selected_keys:
         all_tracks[key] = plex.fetchItems(f"/playlists/{key}/items")
 
+    # 7-day cooldown: exclude tracks used in recent builds; fall back to full pool if too few remain
+    week_ago    = datetime.now() - timedelta(days=7)
+    on_cooldown = {r.track_id for r in TrackHistory.query.filter(
+        TrackHistory.provider == "plex",
+        TrackHistory.used_at  >= week_ago
+    ).all()}
+    for key in list(all_tracks):
+        fresh = [t for t in all_tracks[key] if str(t.ratingKey) not in on_cooldown]
+        all_tracks[key] = fresh if len(fresh) >= block_size else all_tracks[key]
+
     # Build weighted cycle from non-pinned playlists, then shuffle once
     non_pinned = [k for k in selected_keys if k != pinned_key]
     cycle      = []
@@ -643,6 +711,15 @@ def plex_build():
             if pinned_pool and block_count % pin_interval == 0:
                 block_tracks.extend(random.sample(pinned_pool, min(block_size, len(pinned_pool))))
 
+    # Deduplicate preserving order
+    seen_keys   = set()
+    deduped     = []
+    for track in block_tracks:
+        if track.ratingKey not in seen_keys:
+            seen_keys.add(track.ratingKey)
+            deduped.append(track)
+    block_tracks = deduped
+
     prefix       = request.form.get("playlist_prefix", "").strip()
     base         = f"{prefix} Block Mix" if prefix else "Block Mix"
     title        = f"{base} {_date_label()}"
@@ -654,6 +731,12 @@ def plex_build():
         tool="Block Mix",
         provider="plex"
     ))
+    db.session.commit()
+
+    _record_usage(selected_keys, "plex")
+
+    for track in block_tracks:
+        db.session.add(TrackHistory(track_id=str(track.ratingKey), provider="plex"))
     db.session.commit()
 
     return render_template("plex_done.html", playlist=new_playlist, track_count=len(block_tracks))
@@ -753,9 +836,13 @@ def spotify_stats(playlist_id):
             artists[artist["name"]] = artists.get(artist["name"], 0) + 1
     top_artists = sorted(artists.items(), key=lambda x: -x[1])[:10]
 
+    usage     = PlaylistUsage.query.filter_by(playlist_id=playlist_id, provider="spotify").first()
+    use_count = usage.use_count if usage else 0
+
     return render_template("spotify_stats.html", playlist=playlist,
                            track_count=len(tracks), hours=hours, minutes=minutes,
-                           unique_artists=len(artists), top_artists=top_artists)
+                           unique_artists=len(artists), top_artists=top_artists,
+                           use_count=use_count)
 
 
 # ---------------------------------------------------------------
@@ -781,9 +868,13 @@ def plex_stats(playlist_key):
         artists[name] = artists.get(name, 0) + 1
     top_artists = sorted(artists.items(), key=lambda x: -x[1])[:10]
 
+    usage     = PlaylistUsage.query.filter_by(playlist_id=str(playlist_key), provider="plex").first()
+    use_count = usage.use_count if usage else 0
+
     return render_template("plex_stats.html", playlist=playlist,
                            track_count=len(tracks), hours=hours, minutes=minutes,
-                           unique_artists=len(artists), top_artists=top_artists)
+                           unique_artists=len(artists), top_artists=top_artists,
+                           use_count=use_count)
 
 
 # ---------------------------------------------------------------

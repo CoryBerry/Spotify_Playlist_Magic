@@ -42,6 +42,7 @@
             <option value="za">Z → A</option>
             <option value="most">Most Tracks</option>
             <option value="least">Fewest Tracks</option>
+            <option value="usage">Most Used</option>
           </select>
         </div>
         <div class="col-md-3">
@@ -77,7 +78,8 @@
         <div class="col playlist-card"
              data-name="{{ playlist.title | lower }}"
              data-tracks="{{ playlist.leafCount }}"
-             data-order="{{ loop.index }}">
+             data-order="{{ loop.index }}"
+             data-usage="{{ usage_map_count.get(playlist.ratingKey|string, 0) }}">
           <div class="card h-100 {% if playlist.leafCount >= 500 %}border-warning{% endif %}">
             <div class="card-body">
               <div class="form-check">
@@ -106,6 +108,9 @@
                   <span class="text-muted">{{ playlist.leafCount }} tracks</span>
                 {% endif %}
               </p>
+              {% if usage_map_count.get(playlist.ratingKey|string, 0) > 0 %}
+                <span class="text-muted small">used {{ usage_map_count.get(playlist.ratingKey|string, 0) }}×</span>
+              {% endif %}
               {% if playlist.summary %}
                 <p class="mt-1 mb-0 small text-muted">{{ playlist.summary }}</p>
               {% endif %}
@@ -199,6 +204,7 @@
         if (val === "za")    return b.dataset.name.localeCompare(a.dataset.name);
         if (val === "most")  return b.dataset.tracks - a.dataset.tracks;
         if (val === "least") return a.dataset.tracks - b.dataset.tracks;
+        if (val === "usage") return b.dataset.usage - a.dataset.usage;
         return a.dataset.order - b.dataset.order;
       });
       cards.forEach(card => grid.appendChild(card));
