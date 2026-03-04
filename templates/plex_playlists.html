@@ -49,6 +49,13 @@
           <label class="form-label fw-bold mb-1">Filter</label>
           <input type="text" id="playlistFilter" class="form-control" placeholder="Type to filter...">
         </div>
+        <div class="col-auto">
+          <label class="form-label fw-bold mb-1">Min tracks: <span id="minTracksLabel">20</span></label>
+          <input type="range" id="minTracks" min="0" max="4" step="1" value="0" class="form-range" style="width: 130px;">
+          <div class="d-flex justify-content-between" style="width: 130px; font-size: 0.65rem; color: #999; margin-top: -4px;">
+            <span>20</span><span>50</span><span>100</span><span>200</span><span>500</span>
+          </div>
+        </div>
         <div class="col-auto" id="pinIntervalGroup" style="display:none">
           <label class="form-label fw-bold mb-1">Pin every</label>
           <select name="pin_interval" id="pinInterval" class="form-select" style="width: 120px;">
@@ -130,6 +137,10 @@
     const filter     = document.getElementById("playlistFilter");
     const sorter     = document.getElementById("sortSelect");
     const counter    = document.getElementById("visibleCount");
+    const minTracksEl    = document.getElementById("minTracks");
+    const minTracksLabel = document.getElementById("minTracksLabel");
+    const NOTCHES = [20, 50, 100, 200, 500];
+    function getMinTracks() { return NOTCHES[parseInt(minTracksEl.value)]; }
     const blockSizeEl      = document.getElementById("blockSize");
     const repeatsEl        = document.getElementById("repeats");
     const trackLabel       = document.getElementById("trackCountLabel");
@@ -189,9 +200,12 @@
     }
 
     function applyFilter() {
-      const term = filter.value.toLowerCase();
+      const term      = filter.value.toLowerCase();
+      const minTracks = getMinTracks();
       getCards().forEach(card => {
-        card.style.display = card.dataset.name.includes(term) ? "" : "none";
+        const nameMatch  = card.dataset.name.includes(term);
+        const trackMatch = parseInt(card.dataset.tracks) >= minTracks;
+        card.style.display = (nameMatch && trackMatch) ? "" : "none";
       });
       updateCount();
     }
@@ -218,6 +232,10 @@
 
     filter.addEventListener("input", applyFilter);
     sorter.addEventListener("change", () => { applySort(); applyFilter(); });
+    minTracksEl.addEventListener("input", () => {
+      minTracksLabel.textContent = getMinTracks();
+      applyFilter();
+    });
     blockSizeEl.addEventListener("change", updateTrackCount);
     repeatsEl.addEventListener("change", updateTrackCount);
     pinIntervalEl.addEventListener("change", updateTrackCount);
