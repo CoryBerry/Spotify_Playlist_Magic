@@ -87,6 +87,14 @@ The Plex section of the nav will appear automatically once both values are set. 
 
 ---
 
+## Security Note for Server Deployments
+
+This app is designed to run **locally** — just you, on your own machine. If you deploy it to a public or shared server, be aware that it does not implement CSRF protection. That means a malicious website could potentially trigger playlist actions (create, delete, tag) on behalf of a logged-in user by submitting forged requests.
+
+For a personal localhost setup this isn't a real concern, but if you're hosting it for others, add CSRF protection before going live — [Flask-WTF](https://flask-wtf.readthedocs.io/) makes this straightforward.
+
+---
+
 ## Known Limitations
 
 - **Mood filter removed** — Spotify restricted the `/audio-features` endpoint for new developer apps in late 2024. The mood/vibe filtering feature that would have used it has been disabled.
