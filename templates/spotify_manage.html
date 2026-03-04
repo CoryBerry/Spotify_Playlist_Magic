@@ -101,6 +101,7 @@
             <td class="d-flex gap-1">
               <button type="button" class="btn btn-outline-secondary btn-sm preview-btn"
                       data-id="{{ playlist.id }}">Preview</button>
+              <a href="/spotify/stats/{{ playlist.id }}" class="btn btn-outline-secondary btn-sm">Stats</a>
               {% if playlist.owner.id == user_id %}
                 <form method="POST" action="/spotify/toggle-visibility/{{ playlist.id }}">
                   <button type="submit" class="btn btn-sm {{ 'btn-outline-success' if playlist.public else 'btn-outline-secondary' }}">

@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+
+{% block title %}Recently Created{% endblock %}
+
+{% block content %}
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h2>Recently Created</h2>
+    {% if records | selectattr("alive", "equalto", false) | list %}
+      <form method="POST" action="/recently-created/clear-dead">
+        <button type="submit" class="btn btn-outline-secondary btn-sm">Clear Deleted Entries</button>
+      </form>
+    {% endif %}
+  </div>
+
+  {% if records %}
+    <table class="table table-hover align-middle">
+      <thead class="table-dark">
+        <tr>
+          <th>Name</th>
+          <th>Tool</th>
+          <th>Source</th>
+          <th>Created</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for rec in records %}
+          <tr class="{{ 'text-muted' if not rec.alive else '' }}">
+            <td>
+              {% if rec.alive and rec.url %}
+                <a href="{{ rec.url }}" target="_blank" rel="noopener">{{ rec.name }}</a>
+              {% elif rec.alive %}
+                {{ rec.name }}
+              {% else %}
+                <s class="text-muted">{{ rec.name }}</s>
+              {% endif %}
+              {% if rec.alive %}
+                {% if rec.provider == "spotify" %}
+                  <a href="/spotify/stats/{{ rec.playlist_id }}" class="btn btn-outline-secondary btn-sm ms-2">Stats</a>
+                {% elif rec.provider == "plex" %}
+                  <a href="/plex/stats/{{ rec.playlist_id }}" class="btn btn-outline-info btn-sm ms-2">Stats</a>
+                {% endif %}
+              {% endif %}
+            </td>
+            <td><span class="badge bg-secondary">{{ rec.tool }}</span></td>
+            <td>
+              {% if rec.provider == "spotify" %}
+                <span class="badge bg-success">Spotify</span>
+              {% else %}
+                <span class="badge bg-info text-dark">Plex</span>
+              {% endif %}
+            </td>
+            <td class="text-muted small">{{ rec.created_at.strftime('%m/%d %I:%M%p') }}</td>
+            <td>
+              {% if rec.alive %}
+                <span class="badge bg-success">Active</span>
+              {% else %}
+                <span class="badge bg-secondary">Deleted</span>
+              {% endif %}
+            </td>
+            <td>
+              <form method="POST" action="/recently-created/remove/{{ rec.id }}">
+                <button type="submit" class="btn btn-outline-danger btn-sm">Remove</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="text-muted">Nothing here yet — playlists you create with Block Mix or Album Blast will show up here.</p>
+  {% endif %}
+{% endblock %}

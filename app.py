@@ -23,6 +23,10 @@ load_dotenv()
 def _now_label():
     return datetime.now().strftime('%m/%d %I:%M%p')
 
+def _date_label():
+    now = datetime.now()
+    return now.strftime('%b ') + str(now.day)  # e.g. "Mar 3"
+
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key")
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///spotify_tools.db"
@@ -49,6 +53,18 @@ class PlaylistCache(db.Model):
     user_id    = db.Column(db.String(100), nullable=False, unique=True)
     data       = db.Column(db.Text, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.now)
+
+
+class CreatedPlaylist(db.Model):
+    id          = db.Column(db.Integer, primary_key=True)
+    playlist_id = db.Column(db.String(100), nullable=False)
+    name        = db.Column(db.String(200), nullable=False)
+    tool        = db.Column(db.String(50),  nullable=False)   # "Block Mix" or "Album Blast"
+    provider    = db.Column(db.String(20),  nullable=False)   # "spotify" or "plex"
+    url         = db.Column(db.String(500), nullable=True)
+    created_at  = db.Column(db.DateTime,   default=datetime.now)
+    alive       = db.Column(db.Boolean,    default=True)
+    checked_at  = db.Column(db.DateTime,   nullable=True)
 
 
 with app.app_context():
@@ -116,7 +132,8 @@ def get_spotify_client():
     return spotipy.Spotify(auth=token_info["access_token"])
 
 
-CACHE_TTL = timedelta(hours=1)
+CACHE_TTL  = timedelta(hours=1)
+VERIFY_TTL = timedelta(minutes=15)
 
 def get_cached_playlists(sp, user_id):
     """Return (playlists, updated_at, from_cache).
@@ -309,23 +326,26 @@ def spotify_build():
     block_uris = [uri for uri in block_uris if uri not in cover_set]
     track_uris = cover_uris + block_uris
 
-    # Create playlist — include mood in name if active
-    user_id      = sp.me()["id"]
-    mood_label   = f"{mood.title()} " if mood != "none" else ""
-    new_playlist = sp.user_playlist_create(
-        user_id, f"{mood_label}Block Mix {_now_label()}", public=False
-    )
+    # Create playlist
+    user_id        = sp.me()["id"]
+    prefix        = request.form.get("playlist_prefix", "").strip()
+    base          = f"{prefix} : Block Mix" if prefix else "Block Mix"
+    playlist_name = f"{base} {_date_label()}"
+    new_playlist  = sp.user_playlist_create(user_id, playlist_name, public=False)
     # Add tracks in batches of 100 — Spotify's API limit per request
     for i in range(0, len(track_uris), 100):
         sp.playlist_add_items(new_playlist["id"], track_uris[i:i + 100])
 
-    return render_template(
-        "spotify_done.html",
-        playlist=new_playlist,
-        track_count=len(track_uris),
-        mood=mood,
-        fallbacks=fallbacks
-    )
+    db.session.add(CreatedPlaylist(
+        playlist_id=new_playlist["id"],
+        name=new_playlist["name"],
+        tool="Block Mix",
+        provider="spotify",
+        url=new_playlist["external_urls"]["spotify"]
+    ))
+    db.session.commit()
+
+    return render_template("spotify_done.html", playlist=new_playlist, track_count=len(track_uris))
 
 
 @app.route("/spotify/album-blaster")
@@ -405,6 +425,15 @@ def album_blast():
     )
     for i in range(0, len(track_uris), 100):
         sp.playlist_add_items(new_playlist["id"], track_uris[i:i + 100])
+
+    db.session.add(CreatedPlaylist(
+        playlist_id=new_playlist["id"],
+        name=new_playlist["name"],
+        tool="Album Blast",
+        provider="spotify",
+        url=new_playlist["external_urls"]["spotify"]
+    ))
+    db.session.commit()
 
     return render_template(
         "spotify_album_blast_done.html",
@@ -601,8 +630,18 @@ def plex_build():
             if pinned_pool and block_count % pin_interval == 0:
                 block_tracks.extend(random.sample(pinned_pool, min(block_size, len(pinned_pool))))
 
-    title        = f"Block Mix {_now_label()}"
+    prefix       = request.form.get("playlist_prefix", "").strip()
+    base         = f"{prefix} Block Mix" if prefix else "Block Mix"
+    title        = f"{base} {_date_label()}"
     new_playlist = plex.createPlaylist(title, items=block_tracks)
+
+    db.session.add(CreatedPlaylist(
+        playlist_id=str(new_playlist.ratingKey),
+        name=new_playlist.title,
+        tool="Block Mix",
+        provider="plex"
+    ))
+    db.session.commit()
 
     return render_template("plex_done.html", playlist=new_playlist, track_count=len(block_tracks))
 
@@ -657,10 +696,135 @@ def plex_album_blast():
     title        = f"Album Blast {_now_label()}"
     new_playlist = plex.createPlaylist(title, items=all_tracks)
 
+    db.session.add(CreatedPlaylist(
+        playlist_id=str(new_playlist.ratingKey),
+        name=new_playlist.title,
+        tool="Album Blast",
+        provider="plex"
+    ))
+    db.session.commit()
+
     return render_template("plex_album_blast_done.html",
                            playlist=new_playlist,
                            track_count=len(all_tracks),
                            album_names=album_names)
+
+
+# ---------------------------------------------------------------
+# Routes — Spotify Stats
+# ---------------------------------------------------------------
+
+@app.route("/spotify/stats/<playlist_id>")
+def spotify_stats(playlist_id):
+    sp = get_spotify_client()
+    if not sp:
+        return redirect(url_for("spotify_login"))
+
+    playlist = sp.playlist(playlist_id, fields="name,tracks.total")
+
+    tracks  = []
+    results = sp.playlist_tracks(playlist_id, fields="next,items(track(name,duration_ms,artists(name)))")
+    while results:
+        for item in results["items"]:
+            if item["track"]:
+                tracks.append(item["track"])
+        results = sp.next(results) if results["next"] else None
+
+    total_ms = sum(t.get("duration_ms", 0) or 0 for t in tracks)
+    hours    = total_ms // 3600000
+    minutes  = (total_ms % 3600000) // 60000
+
+    artists = {}
+    for track in tracks:
+        for artist in track.get("artists", []):
+            artists[artist["name"]] = artists.get(artist["name"], 0) + 1
+    top_artists = sorted(artists.items(), key=lambda x: -x[1])[:10]
+
+    return render_template("spotify_stats.html", playlist=playlist,
+                           track_count=len(tracks), hours=hours, minutes=minutes,
+                           unique_artists=len(artists), top_artists=top_artists)
+
+
+# ---------------------------------------------------------------
+# Routes — Plex Stats
+# ---------------------------------------------------------------
+
+@app.route("/plex/stats/<int:playlist_key>")
+def plex_stats(playlist_key):
+    plex, err = _plex_or_bust()
+    if err:
+        return err
+
+    playlist = plex.fetchItem(playlist_key)
+    tracks   = [t for t in playlist.items() if t.type == "track"]
+
+    total_ms = sum(getattr(t, "duration", 0) or 0 for t in tracks)
+    hours    = total_ms // 3600000
+    minutes  = (total_ms % 3600000) // 60000
+
+    artists = {}
+    for track in tracks:
+        name = getattr(track, "grandparentTitle", "Unknown")
+        artists[name] = artists.get(name, 0) + 1
+    top_artists = sorted(artists.items(), key=lambda x: -x[1])[:10]
+
+    return render_template("plex_stats.html", playlist=playlist,
+                           track_count=len(tracks), hours=hours, minutes=minutes,
+                           unique_artists=len(artists), top_artists=top_artists)
+
+
+# ---------------------------------------------------------------
+# Routes — Recently Created
+# ---------------------------------------------------------------
+
+@app.route("/recently-created")
+def recently_created():
+    sp   = get_spotify_client()
+    plex = get_plex()
+    now  = datetime.now()
+
+    records = CreatedPlaylist.query.order_by(CreatedPlaylist.created_at.desc()).all()
+
+    # Verify playlists not checked recently — skip if we can't reach that provider
+    changed = False
+    for rec in records:
+        if not rec.alive:
+            continue
+        if rec.checked_at and (now - rec.checked_at) < VERIFY_TTL:
+            continue
+        try:
+            if rec.provider == "spotify" and sp:
+                sp.playlist(rec.playlist_id, fields="id")
+            elif rec.provider == "plex" and plex:
+                plex.fetchItem(int(rec.playlist_id))
+            else:
+                continue  # can't reach provider right now, leave as-is
+            rec.alive = True
+        except Exception:
+            rec.alive = False
+        rec.checked_at = now
+        changed = True
+
+    if changed:
+        db.session.commit()
+
+    return render_template("recently_created.html", records=records)
+
+
+@app.route("/recently-created/remove/<int:record_id>", methods=["POST"])
+def recently_created_remove(record_id):
+    rec = CreatedPlaylist.query.get(record_id)
+    if rec:
+        db.session.delete(rec)
+        db.session.commit()
+    return redirect(url_for("recently_created"))
+
+
+@app.route("/recently-created/clear-dead", methods=["POST"])
+def recently_created_clear_dead():
+    CreatedPlaylist.query.filter_by(alive=False).delete()
+    db.session.commit()
+    return redirect(url_for("recently_created"))
 
 
 if __name__ == "__main__":

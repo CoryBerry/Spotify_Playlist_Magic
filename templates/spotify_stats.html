@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}Stats: {{ playlist.name }}{% endblock %}
+
+{% block content %}
+  <h2>{{ playlist.name }}</h2>
+  <p class="text-muted small mb-4">Playlist stats</p>
+
+  <div class="row g-3 mb-4">
+    <div class="col-auto">
+      <div class="card text-center px-4 py-3">
+        <div class="fs-2 fw-bold">{{ track_count }}</div>
+        <div class="text-muted small">Tracks</div>
+      </div>
+    </div>
+    <div class="col-auto">
+      <div class="card text-center px-4 py-3">
+        <div class="fs-2 fw-bold">{% if hours %}{{ hours }}h {% endif %}{{ minutes }}m</div>
+        <div class="text-muted small">Runtime</div>
+      </div>
+    </div>
+    <div class="col-auto">
+      <div class="card text-center px-4 py-3">
+        <div class="fs-2 fw-bold">{{ unique_artists }}</div>
+        <div class="text-muted small">Unique Artists</div>
+      </div>
+    </div>
+  </div>
+
+  {% if top_artists %}
+    <h5>Top Artists</h5>
+    <table class="table table-sm" style="max-width: 420px;">
+      <tbody>
+        {% for artist, count in top_artists %}
+          <tr>
+            <td>{{ artist }}</td>
+            <td class="text-muted small text-end">{{ count }} track{{ 's' if count != 1 else '' }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+
+  <a href="javascript:history.back()" class="btn btn-outline-secondary mt-2">← Back</a>
+{% endblock %}
