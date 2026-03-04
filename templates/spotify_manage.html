@@ -33,6 +33,7 @@
       <input type="text" id="bulkTagInput" class="form-control form-control-sm" placeholder="Tag selected..."
              list="tag-suggestions" style="width: 150px;" disabled>
       <button type="button" id="bulkTagBtn" class="btn btn-info btn-sm" disabled>Tag Selected</button>
+      <button type="button" id="bulkUntagBtn" class="btn btn-outline-info btn-sm" disabled>Remove Tag</button>
 
       <button type="button" id="deleteBtn" class="btn btn-danger btn-sm" disabled>Delete Selected (<span id="selectedCount">0</span>)</button>
     </div>
@@ -155,8 +156,9 @@
     const sortSelect  = document.getElementById("sortSelect");
     const deleteBtn    = document.getElementById("deleteBtn");
     const selectAllBtn = document.getElementById("selectAllBtn");
-    const bulkTagInput = document.getElementById("bulkTagInput");
-    const bulkTagBtn   = document.getElementById("bulkTagBtn");
+    const bulkTagInput  = document.getElementById("bulkTagInput");
+    const bulkTagBtn    = document.getElementById("bulkTagBtn");
+    const bulkUntagBtn  = document.getElementById("bulkUntagBtn");
     const selectedCount = document.getElementById("selectedCount");
     const visibleCount  = document.getElementById("visibleCount");
     const confirmModal  = new bootstrap.Modal(document.getElementById("confirmModal"));
@@ -174,6 +176,7 @@
       deleteBtn.disabled        = checked === 0;
       bulkTagInput.disabled     = checked === 0;
       bulkTagBtn.disabled       = checked === 0;
+      bulkUntagBtn.disabled     = checked === 0;
     }
 
     // Filter
@@ -358,15 +361,14 @@
       tagRequest("/spotify/tag/remove", cell.dataset.playlistId, e.target.dataset.tag, cell);
     });
 
-    // Bulk tag — apply one tag to all checked playlists
-    bulkTagBtn.addEventListener("click", () => {
+    function bulkTagAction(url) {
       const tag = bulkTagInput.value.trim().toLowerCase();
       if (!tag) return;
       const checkedRows = getRows().filter(r => !r.classList.contains("d-none") && r.querySelector(".row-check").checked);
       const promises = checkedRows.map(row => {
         const cell        = row.querySelector(".tag-cell");
         const playlist_id = cell.dataset.playlistId;
-        return fetch("/spotify/tag/add", {
+        return fetch(url, {
           method: "POST",
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({playlist_id, tag})
@@ -378,7 +380,10 @@
         bulkTagInput.value = "";
         refreshDatalist();
       });
-    });
+    }
+
+    bulkTagBtn.addEventListener("click",   () => bulkTagAction("/spotify/tag/add"));
+    bulkUntagBtn.addEventListener("click", () => bulkTagAction("/spotify/tag/remove"));
 
   </script>
 {% endblock %}
