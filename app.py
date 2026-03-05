@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 import random
 import json
 import os
+import time
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
@@ -69,6 +70,8 @@ class CreatedPlaylist(db.Model):
     created_at  = db.Column(db.DateTime,   default=datetime.now)
     alive       = db.Column(db.Boolean,    default=True)
     checked_at  = db.Column(db.DateTime,   nullable=True)
+    gen_seconds = db.Column(db.Float,      nullable=True)
+    track_count = db.Column(db.Integer,    nullable=True)
 
 
 class PlaylistUsage(db.Model):
@@ -324,6 +327,8 @@ def spotify_build():
     if len(selected_ids) < 2:
         return redirect(url_for("spotify_playlists"))
 
+    t0 = time.time()
+
     # Fetch all tracks for each playlist — paginate to get the full pool
     all_tracks     = {}
     playlist_names = {}
@@ -404,7 +409,9 @@ def spotify_build():
         name=new_playlist["name"],
         tool="Block Mix",
         provider="spotify",
-        url=new_playlist["external_urls"]["spotify"]
+        url=new_playlist["external_urls"]["spotify"],
+        gen_seconds=round(time.time() - t0, 1),
+        track_count=len(track_uris)
     ))
     db.session.commit()
 
@@ -467,6 +474,7 @@ def album_blast():
         return redirect(url_for("spotify_login"))
 
     track_ids = request.form.getlist("track_ids")
+    t0 = time.time()
 
     # Get album IDs from selected tracks — batch 50 at a time
     seen_album_ids = set()
@@ -503,7 +511,9 @@ def album_blast():
         name=new_playlist["name"],
         tool="Album Blast",
         provider="spotify",
-        url=new_playlist["external_urls"]["spotify"]
+        url=new_playlist["external_urls"]["spotify"],
+        gen_seconds=round(time.time() - t0, 1),
+        track_count=len(track_uris)
     ))
     db.session.commit()
 
@@ -685,6 +695,8 @@ def plex_build():
     if len(selected_keys) < 2:
         return redirect(url_for("plex_playlists"))
 
+    t0 = time.time()
+
     # Fetch all tracks from each selected playlist — skip fetchItem, go direct to items endpoint
     all_tracks = {}
     for key in selected_keys:
@@ -737,7 +749,9 @@ def plex_build():
         playlist_id=str(new_playlist.ratingKey),
         name=new_playlist.title,
         tool="Block Mix",
-        provider="plex"
+        provider="plex",
+        gen_seconds=round(time.time() - t0, 1),
+        track_count=len(block_tracks)
     ))
     db.session.commit()
 
@@ -778,6 +792,7 @@ def plex_album_blast():
         return err
 
     track_keys = [int(k) for k in request.form.getlist("track_ids")]
+    t0 = time.time()
 
     # Batch-fetch all selected tracks in one API call, then read parentRatingKey directly
     # from each track object — avoids N*2 sequential calls (fetchItem + album() per track)
@@ -804,7 +819,9 @@ def plex_album_blast():
         playlist_id=str(new_playlist.ratingKey),
         name=new_playlist.title,
         tool="Album Blast",
-        provider="plex"
+        provider="plex",
+        gen_seconds=round(time.time() - t0, 1),
+        track_count=len(all_tracks)
     ))
     db.session.commit()
 
@@ -929,6 +946,18 @@ def recently_created():
 @app.route("/recently-created/remove/<int:record_id>", methods=["POST"])
 def recently_created_remove(record_id):
     rec = CreatedPlaylist.query.get(record_id)
+    if rec and rec.alive:
+        try:
+            if rec.provider == "spotify":
+                sp = get_spotify_client()
+                if sp:
+                    sp.current_user_unfollow_playlist(rec.playlist_id)
+            elif rec.provider == "plex":
+                plex = get_plex()
+                if plex:
+                    plex.fetchItem(int(rec.playlist_id)).delete()
+        except Exception:
+            pass  # already gone — still remove from our records
     if rec:
         db.session.delete(rec)
         db.session.commit()

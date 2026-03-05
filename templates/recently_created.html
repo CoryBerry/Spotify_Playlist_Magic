@@ -20,6 +20,8 @@
           <th>Tool</th>
           <th>Source</th>
           <th>Created</th>
+          <th>Tracks</th>
+          <th>Time</th>
           <th>Status</th>
           <th></th>
         </tr>
@@ -52,6 +54,8 @@
               {% endif %}
             </td>
             <td class="text-muted small">{{ rec.created_at.strftime('%m/%d %I:%M%p') }}</td>
+            <td class="text-muted small">{{ rec.track_count if rec.track_count is not none else '—' }}</td>
+            <td class="text-muted small">{{ rec.gen_seconds ~ 's' if rec.gen_seconds is not none else '—' }}</td>
             <td>
               {% if rec.alive %}
                 <span class="badge bg-success">Active</span>
