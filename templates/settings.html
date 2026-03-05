@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block title %}Settings{% endblock %}
+
+{% block content %}
+  <h2 class="mb-4">Settings</h2>
+
+  <form method="POST" action="/settings" style="max-width: 480px;">
+    <div class="mb-4">
+      <label for="cooldown_days" class="form-label fw-semibold">Cool-down period (days)</label>
+      <input type="number" class="form-control" id="cooldown_days" name="cooldown_days"
+             min="1" value="{{ settings.cooldown_days }}" required>
+      <div class="form-text">Days a track stays on ice after being used in a build.</div>
+    </div>
+
+    <div class="mb-4">
+      <label for="cooldown_max_plays" class="form-label fw-semibold">Plays before ice</label>
+      <input type="number" class="form-control" id="cooldown_max_plays" name="cooldown_max_plays"
+             min="1" value="{{ settings.cooldown_max_plays }}" required>
+      <div class="form-text">Times a track must be used within the window before going on ice.</div>
+    </div>
+
+    <button type="submit" class="btn btn-primary">Save</button>
+    <p class="text-muted small mt-3">Changes take effect on the next build.</p>
+  </form>
+{% endblock %}

@@ -159,6 +159,12 @@ class TrackHistory(db.Model):
     used_at  = db.Column(db.DateTime,    default=datetime.now)
 
 
+class AppSettings(db.Model):
+    id                 = db.Column(db.Integer, primary_key=True)
+    cooldown_days      = db.Column(db.Integer, default=7)
+    cooldown_max_plays = db.Column(db.Integer, default=2)
+
+
 with app.app_context():
     db.create_all()
 
@@ -172,6 +178,50 @@ def _record_usage(playlist_ids, provider):
         else:
             db.session.add(PlaylistUsage(playlist_id=pid, provider=provider))
     db.session.commit()
+
+
+def get_settings():
+    s = AppSettings.query.get(1)
+    if not s:
+        s = AppSettings(id=1)
+        db.session.add(s)
+        db.session.commit()
+    return s
+
+
+def get_cooldown_stats(provider):
+    from sqlalchemy import func
+    s      = get_settings()
+    cd     = s.cooldown_days
+    cutoff = datetime.now() - timedelta(days=cd)
+
+    rows = db.session.query(
+        TrackHistory.track_id,
+        func.count(TrackHistory.id).label("n"),
+        func.max(TrackHistory.used_at).label("last_used")
+    ).filter(
+        TrackHistory.provider == provider,
+        TrackHistory.used_at  >= cutoff
+    ).group_by(TrackHistory.track_id).all()
+
+    on_ice = [r for r in rows if r.n >= s.cooldown_max_plays]
+    total  = len(on_ice)
+
+    # Bucket day values: 1/7, 3/7, 6/7 of cooldown_days
+    b1 = max(1, round(cd / 7))
+    b2 = max(1, round(3 * cd / 7))
+    b3 = max(1, round(6 * cd / 7))
+    now = datetime.now()
+
+    def _count_bucket(days):
+        threshold = now - timedelta(days=days)
+        return sum(1 for r in on_ice if r.last_used >= threshold)
+
+    return {
+        "total":         total,
+        "buckets":       [(b1, _count_bucket(b1)), (b2, _count_bucket(b2)), (b3, _count_bucket(b3))],
+        "cooldown_days": cd,
+    }
 
 
 # ---------------------------------------------------------------
@@ -413,12 +463,18 @@ def spotify_build():
     fallbacks = []
     mood      = "none"
 
-    # 7-day cooldown: exclude tracks used in recent builds; fall back to full pool if too few remain
-    week_ago     = datetime.now() - timedelta(days=7)
-    on_cooldown  = {r.track_id for r in TrackHistory.query.filter(
+    # Cooldown: exclude tracks used >= max_plays times within window; fall back to full pool if too few remain
+    from sqlalchemy import func as _func
+    settings    = get_settings()
+    cutoff      = datetime.now() - timedelta(days=settings.cooldown_days)
+    raw         = db.session.query(
+        TrackHistory.track_id,
+        _func.count(TrackHistory.id).label("n")
+    ).filter(
         TrackHistory.provider == "spotify",
-        TrackHistory.used_at  >= week_ago
-    ).all()}
+        TrackHistory.used_at  >= cutoff
+    ).group_by(TrackHistory.track_id).all()
+    on_cooldown = {r.track_id for r in raw if r.n >= settings.cooldown_max_plays}
     for pid in list(all_tracks):
         fresh = [t for t in all_tracks[pid] if t not in on_cooldown]
         all_tracks[pid] = fresh if len(fresh) >= block_size else all_tracks[pid]
@@ -770,12 +826,18 @@ def plex_build():
     for key in selected_keys:
         all_tracks[key] = plex.fetchItems(f"/playlists/{key}/items")
 
-    # 7-day cooldown: exclude tracks used in recent builds; fall back to full pool if too few remain
-    week_ago    = datetime.now() - timedelta(days=7)
-    on_cooldown = {r.track_id for r in TrackHistory.query.filter(
+    # Cooldown: exclude tracks used >= max_plays times within window; fall back to full pool if too few remain
+    from sqlalchemy import func as _func
+    settings    = get_settings()
+    cutoff      = datetime.now() - timedelta(days=settings.cooldown_days)
+    raw         = db.session.query(
+        TrackHistory.track_id,
+        _func.count(TrackHistory.id).label("n")
+    ).filter(
         TrackHistory.provider == "plex",
-        TrackHistory.used_at  >= week_ago
-    ).all()}
+        TrackHistory.used_at  >= cutoff
+    ).group_by(TrackHistory.track_id).all()
+    on_cooldown = {r.track_id for r in raw if r.n >= settings.cooldown_max_plays}
     for key in list(all_tracks):
         fresh = [t for t in all_tracks[key] if str(t.ratingKey) not in on_cooldown]
         all_tracks[key] = fresh if len(fresh) >= block_size else all_tracks[key]
@@ -1133,11 +1195,13 @@ def recently_created():
     if changed:
         db.session.commit()
 
-    return render_template("recently_created.html", records=records)
+    cooldown_stats = get_cooldown_stats("spotify") if sp else None
+    return render_template("recently_created.html", records=records, cooldown_stats=cooldown_stats)
 
 
-@app.route("/recently-created/remove/<int:record_id>", methods=["POST"])
-def recently_created_remove(record_id):
+@app.route("/recently-created/delete/<int:record_id>", methods=["POST"])
+def recently_created_delete(record_id):
+    """Delete from provider and mark dead — keeps history."""
     rec = CreatedPlaylist.query.get(record_id)
     if rec and rec.alive:
         try:
@@ -1150,9 +1214,47 @@ def recently_created_remove(record_id):
                 if plex:
                     plex.fetchItem(int(rec.playlist_id)).delete()
         except Exception:
-            pass  # already gone — still remove from our records
+            pass  # already gone — still mark dead
+        rec.alive = False
+        rec.checked_at = datetime.now()
+        db.session.commit()
+    return redirect(url_for("recently_created"))
+
+
+@app.route("/recently-created/remove/<int:record_id>", methods=["POST"])
+def recently_created_remove(record_id):
+    """Remove from DB only — no provider call."""
+    rec = CreatedPlaylist.query.get(record_id)
     if rec:
         db.session.delete(rec)
+        db.session.commit()
+    return redirect(url_for("recently_created"))
+
+
+@app.route("/recently-created/scan", methods=["POST"])
+def recently_created_scan():
+    """Force re-check all alive records regardless of VERIFY_TTL."""
+    sp   = get_spotify_client()
+    plex = get_plex()
+    now  = datetime.now()
+
+    records = CreatedPlaylist.query.filter_by(alive=True).all()
+    changed = False
+    for rec in records:
+        try:
+            if rec.provider == "spotify" and sp:
+                sp.playlist(rec.playlist_id, fields="id")
+            elif rec.provider == "plex" and plex:
+                plex.fetchItem(int(rec.playlist_id))
+            else:
+                continue
+            rec.alive = True
+        except Exception:
+            rec.alive = False
+        rec.checked_at = now
+        changed = True
+
+    if changed:
         db.session.commit()
     return redirect(url_for("recently_created"))
 
@@ -1162,6 +1264,24 @@ def recently_created_clear_dead():
     CreatedPlaylist.query.filter_by(alive=False).delete()
     db.session.commit()
     return redirect(url_for("recently_created"))
+
+
+# ---------------------------------------------------------------
+# Routes — Settings
+# ---------------------------------------------------------------
+
+@app.route("/settings", methods=["GET", "POST"])
+def settings_page():
+    s = get_settings()
+    if request.method == "POST":
+        try:
+            s.cooldown_days      = max(1, min(365, int(request.form["cooldown_days"])))
+            s.cooldown_max_plays = max(1, min(99,  int(request.form["cooldown_max_plays"])))
+            db.session.commit()
+        except (ValueError, TypeError):
+            pass
+        return redirect(url_for("settings_page"))
+    return render_template("settings.html", settings=s)
 
 
 if __name__ == "__main__":
