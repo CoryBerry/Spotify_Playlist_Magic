@@ -279,7 +279,9 @@ def spotify_playlists():
     playlists, cache_updated_at, _ = get_cached_playlists(sp, user_id)
 
     # Only show playlists with enough tracks to be useful for block mixing
-    playlists = [p for p in playlists if p["tracks"]["total"] >= 20]
+    # Guard against null items and null tracks fields the Spotify API occasionally returns
+    playlists = [p for p in playlists
+                 if p and p.get("tracks") and p["tracks"]["total"] >= 20]
 
     # Pass tag data so Block Mix can filter by tag
     all_tags = PlaylistTag.query.filter_by(user_id="local").all()

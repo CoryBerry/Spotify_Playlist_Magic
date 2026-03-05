@@ -109,7 +109,7 @@
              data-order="{{ loop.index }}"
              data-tags="{{ tag_map.get(playlist.id, []) | join(',') | lower }}"
              data-usage="{{ usage_map_count.get(playlist.id, 0) }}"
-             data-owner="{{ playlist.owner.id }}">
+             data-owner="{{ playlist.owner.id if playlist.owner else '' }}">
           <div class="card h-100 {% if playlist.tracks.total >= 500 %}border-warning{% endif %}">
             {% if playlist.images %}
               <img src="{{ playlist.images[0].url }}" class="card-img-top" style="height: 160px; object-fit: cover;">
@@ -140,7 +140,7 @@
                 {% else %}
                   <span class="text-muted">{{ playlist.tracks.total }} tracks</span>
                 {% endif %}
-                {% if playlist.owner.id != user_id %}
+                {% if playlist.owner and playlist.owner.id != user_id %}
                   <span class="text-muted"> · by {{ playlist.owner.display_name or playlist.owner.id }}</span>
                 {% endif %}
               </p>
