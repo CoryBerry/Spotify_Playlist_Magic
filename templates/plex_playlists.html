@@ -69,13 +69,17 @@
           <span id="visibleCount" class="text-muted small d-block"></span>
           <button type="button" id="reviewBtn" class="btn btn-outline-secondary btn-sm mt-1">Review Selected</button>
         </div>
-        <div class="col-auto ms-auto text-end">
-          <input type="text" name="playlist_prefix" class="form-control form-control-sm mb-2"
-                 placeholder="Playlist name (optional)" style="width: 220px;">
-          <div class="text-muted small mb-1" id="trackCountLabel">0 playlists selected</div>
-          <div class="fw-bold fs-5" id="trackCountTotal">— tracks</div>
-          <div class="text-muted small" id="timeEstimate"></div>
-          <button type="submit" class="btn btn-info mt-2">Build Plex Playlist</button>
+        <div class="col-auto ms-auto">
+          <div class="d-flex align-items-center gap-3">
+            <input type="text" name="playlist_prefix" class="form-control form-control-sm"
+                   placeholder="Playlist name (optional)" style="width: 200px;">
+            <div class="text-end lh-sm">
+              <div class="text-muted small" id="trackCountLabel">0 playlists selected</div>
+              <div class="fw-bold" id="trackCountTotal">— tracks</div>
+              <div class="text-muted small" id="timeEstimate"></div>
+            </div>
+            <button type="submit" class="btn btn-info">Build Plex Playlist</button>
+          </div>
         </div>
       </div>
     </div>
