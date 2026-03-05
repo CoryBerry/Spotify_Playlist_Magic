@@ -39,9 +39,9 @@
       {% if cooldown_stats %}
         <p class="text-muted small mb-2">
           🧊 <strong>{{ cooldown_stats.total }}</strong> tracks on ice
-          &nbsp;&middot;&nbsp; Past {{ cooldown_stats.buckets[0][0] }}d: {{ cooldown_stats.buckets[0][1] }}
-          &nbsp;&middot;&nbsp; Past {{ cooldown_stats.buckets[1][0] }}d: {{ cooldown_stats.buckets[1][1] }}
-          &nbsp;&middot;&nbsp; Past {{ cooldown_stats.buckets[2][0] }}d: {{ cooldown_stats.buckets[2][1] }}
+          &nbsp;&middot;&nbsp; Warms up in {{ cooldown_stats.cooldown_days - cooldown_stats.buckets[0][0] }}d: {{ cooldown_stats.buckets[0][1] }}
+          &nbsp;&middot;&nbsp; Warms up in {{ cooldown_stats.cooldown_days - cooldown_stats.buckets[1][0] }}d: {{ cooldown_stats.buckets[1][1] }}
+          &nbsp;&middot;&nbsp; Warms up in {{ cooldown_stats.cooldown_days - cooldown_stats.buckets[2][0] }}d: {{ cooldown_stats.buckets[2][1] }}
         </p>
       {% endif %}
       <div class="mb-3">

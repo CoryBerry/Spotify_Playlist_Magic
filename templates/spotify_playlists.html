@@ -56,6 +56,23 @@
             <span>20</span><span>50</span><span>100</span><span>200</span><span>500</span>
           </div>
         </div>
+        <div class="col-auto">
+          <label class="form-label fw-bold mb-1">Owner</label>
+          <div class="d-flex gap-2">
+            <div class="form-check form-check-inline mb-0">
+              <input class="form-check-input" type="radio" name="ownerFilter" id="ownerBoth" value="both" checked>
+              <label class="form-check-label small" for="ownerBoth">Both</label>
+            </div>
+            <div class="form-check form-check-inline mb-0">
+              <input class="form-check-input" type="radio" name="ownerFilter" id="ownerMe" value="me">
+              <label class="form-check-label small" for="ownerMe">Me</label>
+            </div>
+            <div class="form-check form-check-inline mb-0">
+              <input class="form-check-input" type="radio" name="ownerFilter" id="ownerOthers" value="other">
+              <label class="form-check-label small" for="ownerOthers">Others</label>
+            </div>
+          </div>
+        </div>
         <div class="col-auto" id="pinIntervalGroup" style="display:none">
           <label class="form-label fw-bold mb-1">Pin every</label>
           <select name="pin_interval" id="pinInterval" class="form-select" style="width: 120px;">
@@ -108,7 +125,8 @@
              data-tracks="{{ playlist.tracks.total }}"
              data-order="{{ loop.index }}"
              data-tags="{{ tag_map.get(playlist.id, []) | join(',') | lower }}"
-             data-usage="{{ usage_map_count.get(playlist.id, 0) }}">
+             data-usage="{{ usage_map_count.get(playlist.id, 0) }}"
+             data-owner="{{ 'me' if playlist.owner and playlist.owner.id == user_id else 'other' }}">
           <div class="card h-100 {% if playlist.tracks.total >= 500 %}border-warning{% endif %}">
             {% if playlist.images %}
               <img src="{{ playlist.images[0].url }}" class="card-img-top" style="height: 160px; object-fit: cover;">
@@ -123,6 +141,7 @@
                 <div class="d-flex gap-2 align-items-center flex-wrap">
                   <label class="small text-muted mb-0">Weight</label>
                   <select name="weight_{{ playlist.id }}" class="form-select form-select-sm weight-select" style="width: 65px;">
+                    <option value="0.5">½×</option>
                     <option value="1" selected>1×</option>
                     <option value="2">2×</option>
                     <option value="3">3×</option>
@@ -206,7 +225,7 @@
       let weightSum = 0;
       checks.forEach(cb => {
         if (cb.value === pinnedId) return;
-        const weight = parseInt(cb.closest(".playlist-card").querySelector(".weight-select")?.value || 1);
+        const weight = parseFloat(cb.closest(".playlist-card").querySelector(".weight-select")?.value || 1);
         weightSum += weight;
       });
 
@@ -236,13 +255,15 @@
     }
 
     function applyFilter() {
-      const term      = filter.value.toLowerCase();
-      const minTracks = getMinTracks();
+      const term       = filter.value.toLowerCase();
+      const minTracks  = getMinTracks();
+      const ownerVal   = document.querySelector('input[name="ownerFilter"]:checked')?.value || "both";
       getCards().forEach(card => {
         const nameMatch  = card.dataset.name.includes(term);
         const tagMatch   = !activeTag || card.dataset.tags.split(",").includes(activeTag);
         const trackMatch = parseInt(card.dataset.tracks) >= minTracks;
-        card.style.display = (nameMatch && tagMatch && trackMatch) ? "" : "none";
+        const ownerMatch = ownerVal === "both" || card.dataset.owner === ownerVal;
+        card.style.display = (nameMatch && tagMatch && trackMatch && ownerMatch) ? "" : "none";
       });
       updateCount();
     }
@@ -268,6 +289,7 @@
     }
 
     filter.addEventListener("input", applyFilter);
+    document.querySelectorAll('input[name="ownerFilter"]').forEach(r => r.addEventListener("change", applyFilter));
     sorter.addEventListener("change", () => { applySort(); applyFilter(); });
     minTracksEl.addEventListener("input", () => {
       minTracksLabel.textContent = getMinTracks();

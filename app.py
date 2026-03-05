@@ -213,13 +213,14 @@ def get_cooldown_stats(provider):
     b3 = max(1, round(6 * cd / 7))
     now = datetime.now()
 
-    def _count_bucket(days):
-        threshold = now - timedelta(days=days)
-        return sum(1 for r in on_ice if r.last_used >= threshold)
+    def _count_range(min_days, max_days):
+        lo = now - timedelta(days=max_days)
+        hi = now - timedelta(days=min_days)
+        return sum(1 for r in on_ice if lo <= r.last_used < hi)
 
     return {
         "total":         total,
-        "buckets":       [(b1, _count_bucket(b1)), (b2, _count_bucket(b2)), (b3, _count_bucket(b3))],
+        "buckets":       [(b1, _count_range(0, b1)), (b2, _count_range(b1, b2)), (b3, _count_range(b2, b3))],
         "cooldown_days": cd,
     }
 
@@ -365,10 +366,6 @@ def logout():
     return redirect(url_for("index"))
 
 
-@app.route("/about")
-def about():
-    return render_template("about.html")
-
 
 # ---------------------------------------------------------------
 # Routes — Spotify
@@ -440,7 +437,9 @@ def spotify_build():
     mood         = request.form.get("mood", "none")
     pinned_id    = request.form.get("pinned_playlist_id", "").strip()
     pin_interval = max(1, min(10, int(request.form.get("pin_interval", 1))))
-    weights      = {pid: max(1, min(5, int(request.form.get(f"weight_{pid}", 1)))) for pid in selected_ids}
+    weights      = {pid: max(0.5, min(5, float(request.form.get(f"weight_{pid}", 1)))) for pid in selected_ids}
+    if any(w == 0.5 for w in weights.values()):
+        weights = {pid: int(w * 2) for pid, w in weights.items()}
 
     if len(selected_ids) < 2:
         return redirect(url_for("spotify_playlists"))
@@ -814,7 +813,9 @@ def plex_build():
     repeats       = max(1, min(10, int(request.form.get("repeats", 1))))
     pinned_key    = request.form.get("pinned_playlist_id", "").strip()
     pin_interval  = max(1, min(10, int(request.form.get("pin_interval", 1))))
-    weights       = {k: max(1, min(5, int(request.form.get(f"weight_{k}", 1)))) for k in selected_keys}
+    weights       = {k: max(0.5, min(5, float(request.form.get(f"weight_{k}", 1)))) for k in selected_keys}
+    if any(w == 0.5 for w in weights.values()):
+        weights = {k: int(w * 2) for k, w in weights.items()}
 
     if len(selected_keys) < 2:
         return redirect(url_for("plex_playlists"))

@@ -102,6 +102,7 @@
                 <div class="d-flex gap-2 align-items-center flex-wrap">
                   <label class="small text-muted mb-0">Weight</label>
                   <select name="weight_{{ playlist.ratingKey }}" class="form-select form-select-sm weight-select" style="width: 65px;">
+                    <option value="0.5">½×</option>
                     <option value="1" selected>1×</option>
                     <option value="2">2×</option>
                     <option value="3">3×</option>
@@ -174,7 +175,7 @@
       let weightSum = 0;
       checks.forEach(cb => {
         if (cb.value === pinnedId) return;
-        const weight = parseInt(cb.closest(".playlist-card").querySelector(".weight-select")?.value || 1);
+        const weight = parseFloat(cb.closest(".playlist-card").querySelector(".weight-select")?.value || 1);
         weightSum += weight;
       });
 
