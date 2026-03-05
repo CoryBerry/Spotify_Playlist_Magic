@@ -55,10 +55,6 @@
           <div class="d-flex justify-content-between" style="width: 130px; font-size: 0.65rem; color: #999; margin-top: -4px;">
             <span>20</span><span>50</span><span>100</span><span>200</span><span>500</span>
           </div>
-          <div class="form-check mt-2">
-            <input class="form-check-input" type="checkbox" id="showSpotifyOwned" checked>
-            <label class="form-check-label small text-muted" for="showSpotifyOwned">Show Spotify playlists</label>
-          </div>
         </div>
         <div class="col-auto" id="pinIntervalGroup" style="display:none">
           <label class="form-label fw-bold mb-1">Pin every</label>
@@ -108,8 +104,7 @@
              data-tracks="{{ playlist.tracks.total }}"
              data-order="{{ loop.index }}"
              data-tags="{{ tag_map.get(playlist.id, []) | join(',') | lower }}"
-             data-usage="{{ usage_map_count.get(playlist.id, 0) }}"
-             data-owner="{{ playlist.owner.id if playlist.owner else '' }}">
+             data-usage="{{ usage_map_count.get(playlist.id, 0) }}">
           <div class="card h-100 {% if playlist.tracks.total >= 500 %}border-warning{% endif %}">
             {% if playlist.images %}
               <img src="{{ playlist.images[0].url }}" class="card-img-top" style="height: 160px; object-fit: cover;">
@@ -175,7 +170,6 @@
     const counter = document.getElementById("visibleCount");
     const minTracksEl      = document.getElementById("minTracks");
     const minTracksLabel   = document.getElementById("minTracksLabel");
-    const showSpotifyEl    = document.getElementById("showSpotifyOwned");
     const NOTCHES = [20, 50, 100, 200, 500];
     function getMinTracks() { return NOTCHES[parseInt(minTracksEl.value)]; }
     const blockSizeEl      = document.getElementById("blockSize");
@@ -238,15 +232,13 @@
     }
 
     function applyFilter() {
-      const term          = filter.value.toLowerCase();
-      const minTracks     = getMinTracks();
-      const showSpotify   = showSpotifyEl.checked;
+      const term      = filter.value.toLowerCase();
+      const minTracks = getMinTracks();
       getCards().forEach(card => {
-        const nameMatch   = card.dataset.name.includes(term);
-        const tagMatch    = !activeTag || card.dataset.tags.split(",").includes(activeTag);
-        const trackMatch  = parseInt(card.dataset.tracks) >= minTracks;
-        const ownerMatch  = showSpotify || card.dataset.owner !== "spotify";
-        card.style.display = (nameMatch && tagMatch && trackMatch && ownerMatch) ? "" : "none";
+        const nameMatch  = card.dataset.name.includes(term);
+        const tagMatch   = !activeTag || card.dataset.tags.split(",").includes(activeTag);
+        const trackMatch = parseInt(card.dataset.tracks) >= minTracks;
+        card.style.display = (nameMatch && tagMatch && trackMatch) ? "" : "none";
       });
       updateCount();
     }
@@ -277,7 +269,6 @@
       minTracksLabel.textContent = getMinTracks();
       applyFilter();
     });
-    showSpotifyEl.addEventListener("change", applyFilter);
     blockSizeEl.addEventListener("change", updateTrackCount);
     repeatsEl.addEventListener("change", updateTrackCount);
     pinIntervalEl.addEventListener("change", updateTrackCount);
