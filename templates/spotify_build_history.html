@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}Block Mix History{% endblock %}
+
+{% block content %}
+  <h2>Block Mix History</h2>
+  <p class="text-muted">Source playlists for each build, in block order.</p>
+
+  {% if not builds %}
+    <p class="text-muted">No Block Mix builds recorded yet.</p>
+  {% else %}
+    <div class="d-flex flex-column gap-3">
+      {% for build in builds %}
+        <div class="card">
+          <div class="card-body">
+            <div class="d-flex justify-content-between align-items-start">
+              <div>
+                <h6 class="mb-0">
+                  {% if build.url %}
+                    <a href="{{ build.url }}" target="_blank" class="text-decoration-none">{{ build.name }}</a>
+                  {% else %}
+                    {{ build.name }}
+                  {% endif %}
+                </h6>
+                <small class="text-muted">
+                  {{ build.created_at.strftime('%b %d, %Y %I:%M %p').replace(' 0', ' ') }}
+                  {% if build.track_count %}&nbsp;&middot;&nbsp;{{ build.track_count }} tracks{% endif %}
+                  {% if not build.alive %}&nbsp;&middot;&nbsp;<span class="text-danger">deleted</span>{% endif %}
+                </small>
+              </div>
+            </div>
+            {% set srcs = sources.get(build.id, []) %}
+            {% if srcs %}
+              <ol class="mt-2 mb-0 ps-3">
+                {% for src in srcs %}
+                  <li class="small text-muted">{{ src.playlist_name }}</li>
+                {% endfor %}
+              </ol>
+            {% else %}
+              <p class="small text-muted mt-2 mb-0"><em>No source data recorded for this build.</em></p>
+            {% endif %}
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+{% endblock %}

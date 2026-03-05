@@ -33,19 +33,34 @@
     </div>
   </div>
 
-  {% if top_artists %}
-    <h5>Top Artists</h5>
-    <table class="table table-sm" style="max-width: 420px;">
-      <tbody>
-        {% for artist, count in top_artists %}
-          <tr>
-            <td>{{ artist }}</td>
-            <td class="text-muted small text-end">{{ count }} track{{ 's' if count != 1 else '' }}</td>
-          </tr>
+  <div class="row g-4 mt-1">
+    {% if build_sources %}
+    <div class="col-auto">
+      <h5>Source Playlists</h5>
+      <ol class="ps-3 mb-0">
+        {% for src in build_sources %}
+          <li class="small text-muted">{{ src.playlist_name }}</li>
         {% endfor %}
-      </tbody>
-    </table>
-  {% endif %}
+      </ol>
+    </div>
+    {% endif %}
 
-  <a href="javascript:history.back()" class="btn btn-outline-secondary mt-2">← Back</a>
+    {% if top_artists %}
+    <div class="col-auto">
+      <h5>Top Artists</h5>
+      <table class="table table-sm mb-0">
+        <tbody>
+          {% for artist, count in top_artists %}
+            <tr>
+              <td>{{ artist }}</td>
+              <td class="text-muted small text-end ps-4">{{ count }} track{{ 's' if count != 1 else '' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+
+  <a href="javascript:history.back()" class="btn btn-outline-secondary mt-3">← Back</a>
 {% endblock %}

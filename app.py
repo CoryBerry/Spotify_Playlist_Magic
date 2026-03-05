@@ -159,6 +159,15 @@ class TrackHistory(db.Model):
     used_at  = db.Column(db.DateTime,    default=datetime.now)
 
 
+class BuildSource(db.Model):
+    """Source playlists used in a Block Mix build, in cycle order."""
+    id                  = db.Column(db.Integer, primary_key=True)
+    created_playlist_id = db.Column(db.Integer, db.ForeignKey("created_playlist.id"), nullable=False)
+    playlist_id         = db.Column(db.String(100), nullable=False)
+    playlist_name       = db.Column(db.String(200), nullable=False)
+    position            = db.Column(db.Integer,     nullable=False)  # 0-indexed order in cycle
+
+
 class AppSettings(db.Model):
     id                 = db.Column(db.Integer, primary_key=True)
     cooldown_days      = db.Column(db.Integer, default=7)
@@ -440,6 +449,8 @@ def spotify_build():
     weights      = {pid: max(0.5, min(5, float(request.form.get(f"weight_{pid}", 1)))) for pid in selected_ids}
     if any(w == 0.5 for w in weights.values()):
         weights = {pid: int(w * 2) for pid, w in weights.items()}
+    else:
+        weights = {pid: int(w) for pid, w in weights.items()}
 
     if len(selected_ids) < 2:
         return redirect(url_for("spotify_playlists"))
@@ -527,7 +538,7 @@ def spotify_build():
     for i in range(0, len(track_uris), 100):
         sp.playlist_add_items(new_playlist["id"], track_uris[i:i + 100])
 
-    db.session.add(CreatedPlaylist(
+    cp = CreatedPlaylist(
         playlist_id=new_playlist["id"],
         name=new_playlist["name"],
         tool="Block Mix",
@@ -535,7 +546,23 @@ def spotify_build():
         url=new_playlist["external_urls"]["spotify"],
         gen_seconds=round(time.time() - t0, 1),
         track_count=len(track_uris)
-    ))
+    )
+    db.session.add(cp)
+    db.session.flush()  # get cp.id
+
+    seen_pids = []
+    for pid in cycle:
+        if pid not in seen_pids:
+            seen_pids.append(pid)
+    if pinned_id and pinned_id not in seen_pids:
+        seen_pids.append(pinned_id)
+    for pos, pid in enumerate(seen_pids):
+        db.session.add(BuildSource(
+            created_playlist_id=cp.id,
+            playlist_id=pid,
+            playlist_name=playlist_names.get(pid, pid),
+            position=pos
+        ))
     db.session.commit()
 
     _record_usage(selected_ids, "spotify")
@@ -816,6 +843,8 @@ def plex_build():
     weights       = {k: max(0.5, min(5, float(request.form.get(f"weight_{k}", 1)))) for k in selected_keys}
     if any(w == 0.5 for w in weights.values()):
         weights = {k: int(w * 2) for k, w in weights.items()}
+    else:
+        weights = {k: int(w) for k, w in weights.items()}
 
     if len(selected_keys) < 2:
         return redirect(url_for("plex_playlists"))
@@ -995,10 +1024,34 @@ def spotify_stats(playlist_id):
     usage     = PlaylistUsage.query.filter_by(playlist_id=playlist_id, provider="spotify").first()
     use_count = usage.use_count if usage else 0
 
+    cp = CreatedPlaylist.query.filter_by(playlist_id=playlist_id, provider="spotify").first()
+    build_sources = (BuildSource.query
+                     .filter_by(created_playlist_id=cp.id)
+                     .order_by(BuildSource.position)
+                     .all()) if cp else []
+
     return render_template("spotify_stats.html", playlist=playlist,
                            track_count=len(tracks), hours=hours, minutes=minutes,
                            unique_artists=len(artists), top_artists=top_artists,
-                           use_count=use_count)
+                           use_count=use_count, build_sources=build_sources)
+
+
+@app.route("/spotify/stats")
+def spotify_build_history():
+    builds = (CreatedPlaylist.query
+              .filter_by(tool="Block Mix", provider="spotify")
+              .order_by(CreatedPlaylist.created_at.desc())
+              .all())
+    sources = {}
+    if builds:
+        build_ids = [b.id for b in builds]
+        rows = (BuildSource.query
+                .filter(BuildSource.created_playlist_id.in_(build_ids))
+                .order_by(BuildSource.created_playlist_id, BuildSource.position)
+                .all())
+        for row in rows:
+            sources.setdefault(row.created_playlist_id, []).append(row)
+    return render_template("spotify_build_history.html", builds=builds, sources=sources)
 
 
 # ---------------------------------------------------------------
