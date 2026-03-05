@@ -15,8 +15,17 @@ Browse any playlist, pick tracks you like, and blast their full albums into a br
 ### 🗂️ Manage Playlists
 Browse all your playlists in a filterable, sortable table. Preview tracks, toggle public/private visibility, and bulk delete playlists you no longer need. *(Spotify only)*
 
+### 📄 Text Import
+Paste a plain-text list of albums or tracks — one per line — and the app builds a Spotify playlist from it. Works great with LLM-generated suggestions. Supports `Artist - Album` and `Artist - Track` formats (auto-detected). Two modes: **Trust It** creates the playlist immediately using the best Spotify match per line, or **Manual Select** shows the top candidates for each line so you can correct any mismatches before creating. *(Spotify only)*
+
 ### 🏷️ Playlist Tags
 Tag your playlists with free-form labels like "chill", "office", or "instrumental". Tags appear in Block Mix as filter buttons so you can quickly narrow down to the right vibe without hunting through hundreds of playlists. *(Spotify only)*
+
+### 📊 Playlist Stats
+See track count, total runtime, unique artist count, and a top-10 artist breakdown for any playlist. Also shows how many times it's been used in a Block Mix build.
+
+### 🕓 Recently Created
+A history of every Block Mix and Album Blast you've built, with creation date, track count, and build time. Shows whether each playlist is still alive or has been deleted. You can remove dead entries in bulk or delete a playlist directly from this page.
 
 ---
 
@@ -92,6 +101,16 @@ The Plex section of the nav will appear automatically once both values are set. 
 This app is designed to run **locally** — just you, on your own machine. If you deploy it to a public or shared server, be aware that it does not implement CSRF protection. That means a malicious website could potentially trigger playlist actions (create, delete, tag) on behalf of a logged-in user by submitting forged requests.
 
 For a personal localhost setup this isn't a real concern, but if you're hosting it for others, add CSRF protection before going live — [Flask-WTF](https://flask-wtf.readthedocs.io/) makes this straightforward.
+
+---
+
+## How Block Mix works
+
+1. You pick two or more playlists and configure a block size (2–10 tracks) and number of repeats (1–10 cycles).
+2. The app builds a rotating cycle of your selected playlists. Optional **weights** let you make one playlist appear more frequently than others.
+3. Optionally pin one playlist to recur every N blocks (good for a "home base" playlist woven through the mix).
+4. Tracks used in any build in the last **7 days** are automatically excluded from new builds, so you don't hear the same songs back-to-back across sessions. (If a playlist's fresh pool is too small, the cooldown is ignored for that playlist so the build doesn't fail.)
+5. Duplicates are removed while preserving block order. If "Cover Art" seeding is on, one track from each selected playlist is prepended so the playlist thumbnail represents each source.
 
 ---
 
