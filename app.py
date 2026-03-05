@@ -22,6 +22,74 @@ except ImportError:
 
 load_dotenv()
 
+def _name_sim(query, result):
+    """Word-overlap similarity between a query title and a Spotify result name."""
+    q = set(query.lower().split())
+    r = set(result.lower().split())
+    return len(q & r) / len(q) if q else 0.0
+
+
+def _search_line(sp, line):
+    """Search Spotify for a line, returning up to 4 scored candidates sorted by name similarity."""
+    parts  = line.split(" - ", 1)
+    artist = parts[0].strip() if len(parts) == 2 else ""
+    title  = parts[1].strip() if len(parts) == 2 else line.strip()
+    q      = (f"artist:{artist} " if artist else "") + title
+
+    candidates = []
+    try:
+        for t in (sp.search(q=q, type="track", limit=5).get("tracks") or {}).get("items") or []:
+            if t:
+                candidates.append({
+                    "uri":    t["uri"],
+                    "type":   "track",
+                    "name":   t["name"],
+                    "artist": t["artists"][0]["name"] if t.get("artists") else "",
+                    "score":  _name_sim(title, t["name"]),
+                })
+    except Exception:
+        pass
+    try:
+        for a in (sp.search(q=q, type="album", limit=3).get("albums") or {}).get("items") or []:
+            if a:
+                candidates.append({
+                    "uri":    a["uri"],
+                    "type":   "album",
+                    "name":   a["name"],
+                    "artist": a["artists"][0]["name"] if a.get("artists") else "",
+                    "score":  _name_sim(title, a["name"]),
+                })
+    except Exception:
+        pass
+    candidates.sort(key=lambda x: -x["score"])
+    return candidates[:4]
+
+
+def _detect_list_type(line_results):
+    """Return 'track', 'album', or 'mixed' based on majority top-match type."""
+    top_types = [lr["matches"][0]["type"] for lr in line_results if lr["matches"]]
+    if not top_types:
+        return "mixed"
+    track_n = top_types.count("track")
+    album_n = top_types.count("album")
+    total   = track_n + album_n
+    if track_n / total >= 0.6:
+        return "track"
+    if album_n / total >= 0.6:
+        return "album"
+    return "mixed"
+
+
+def _bias_matches(line_results, list_type):
+    """Re-sort each line's matches so the dominant list type appears first."""
+    if list_type == "mixed":
+        return
+    for lr in line_results:
+        preferred = [m for m in lr["matches"] if m["type"] == list_type]
+        other     = [m for m in lr["matches"] if m["type"] != list_type]
+        lr["matches"] = preferred + other
+
+
 def _now_label():
     return datetime.now().strftime('%m/%d %I:%M%p')
 
@@ -900,6 +968,131 @@ def plex_stats(playlist_key):
                            track_count=len(tracks), hours=hours, minutes=minutes,
                            unique_artists=len(artists), top_artists=top_artists,
                            use_count=use_count)
+
+
+# ---------------------------------------------------------------
+# Routes — Text Import
+# ---------------------------------------------------------------
+
+
+@app.route("/spotify/text-import")
+def text_import():
+    sp = get_spotify_client()
+    if not sp:
+        return redirect(url_for("spotify_login"))
+    return render_template("spotify_text_import.html")
+
+
+@app.route("/spotify/text-import/preview", methods=["POST"])
+def text_import_preview():
+    sp = get_spotify_client()
+    if not sp:
+        return redirect(url_for("spotify_login"))
+
+    raw_text      = request.form.get("playlist_text", "")
+    playlist_name = request.form.get("playlist_name", "").strip() or f"Text Import {_date_label()}"
+    mode          = request.form.get("mode", "trust")  # "trust" or "manual"
+
+    # Parse lines: skip blanks and comments
+    lines = [l.strip() for l in raw_text.splitlines() if l.strip() and not l.strip().startswith("#")]
+
+    def _uris_from_match(match):
+        if match["type"] == "track":
+            return [match["uri"]]
+        album_id = match["uri"].split(":")[-1]
+        uris     = []
+        res      = sp.album_tracks(album_id)
+        while res:
+            uris.extend(t["uri"] for t in res["items"] if t)
+            res = sp.next(res) if res["next"] else None
+        return uris
+
+    # Search Spotify for each line, then detect and apply list-level type bias
+    line_results = [{"original": line, "matches": _search_line(sp, line)} for line in lines]
+    list_type    = _detect_list_type(line_results)
+    _bias_matches(line_results, list_type)
+
+    if mode == "trust":
+        t0        = time.time()
+        track_uris = []
+        for lr in line_results:
+            if lr["matches"]:
+                track_uris.extend(_uris_from_match(lr["matches"][0]))
+
+        if not track_uris:
+            return render_template("spotify_text_import.html", error="No tracks matched — check your input.")
+
+        user_id      = sp.me()["id"]
+        new_playlist = sp.user_playlist_create(user_id, playlist_name, public=False)
+        for i in range(0, len(track_uris), 100):
+            sp.playlist_add_items(new_playlist["id"], track_uris[i:i + 100])
+
+        db.session.add(CreatedPlaylist(
+            playlist_id=new_playlist["id"],
+            name=new_playlist["name"],
+            tool="Text Import",
+            provider="spotify",
+            url=new_playlist["external_urls"]["spotify"],
+            gen_seconds=round(time.time() - t0, 1),
+            track_count=len(track_uris)
+        ))
+        db.session.commit()
+
+        unmatched = sum(1 for lr in line_results if not lr["matches"])
+        return render_template("spotify_done.html", playlist=new_playlist,
+                               track_count=len(track_uris), unmatched=unmatched)
+
+    # Manual mode: show preview
+    return render_template("spotify_text_import_preview.html",
+                           line_results=line_results,
+                           playlist_name=playlist_name)
+
+
+@app.route("/spotify/text-import/build", methods=["POST"])
+def text_import_build():
+    sp = get_spotify_client()
+    if not sp:
+        return redirect(url_for("spotify_login"))
+
+    playlist_name = request.form.get("playlist_name", f"Text Import {_date_label()}")
+    line_count    = int(request.form.get("line_count", 0))
+    raw_uris      = [request.form.get(f"uri_{i}", "skip") for i in range(line_count)]
+
+    t0         = time.time()
+    track_uris = []
+    for uri in raw_uris:
+        if not uri or uri == "skip":
+            continue
+        if ":album:" in uri:
+            album_id = uri.split(":")[-1]
+            res      = sp.album_tracks(album_id)
+            while res:
+                track_uris.extend(t["uri"] for t in res["items"] if t)
+                res = sp.next(res) if res["next"] else None
+        else:
+            track_uris.append(uri)
+
+    if not track_uris:
+        return redirect(url_for("text_import"))
+
+    user_id      = sp.me()["id"]
+    new_playlist = sp.user_playlist_create(user_id, playlist_name, public=False)
+    for i in range(0, len(track_uris), 100):
+        sp.playlist_add_items(new_playlist["id"], track_uris[i:i + 100])
+
+    db.session.add(CreatedPlaylist(
+        playlist_id=new_playlist["id"],
+        name=new_playlist["name"],
+        tool="Text Import",
+        provider="spotify",
+        url=new_playlist["external_urls"]["spotify"],
+        gen_seconds=round(time.time() - t0, 1),
+        track_count=len(track_uris)
+    ))
+    db.session.commit()
+
+    return render_template("spotify_done.html", playlist=new_playlist,
+                           track_count=len(track_uris), unmatched=0)
 
 
 # ---------------------------------------------------------------

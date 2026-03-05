@@ -6,7 +6,10 @@
   <div class="text-center mt-5">
     <h2>Playlist Created!</h2>
     <p class="lead">{{ playlist.name }}</p>
-    <p class="text-muted">{{ track_count }} tracks added in blocks.</p>
+    <p class="text-muted">{{ track_count }} track{{ 's' if track_count != 1 else '' }} added.</p>
+    {% if unmatched %}
+      <p class="text-warning small">{{ unmatched }} line{{ 's' if unmatched != 1 else '' }} had no Spotify match and were skipped.</p>
+    {% endif %}
 
     <div class="mt-4">
       <a href="{{ playlist.external_urls.spotify }}" class="btn btn-success me-2" target="_blank">Open in Spotify</a>
