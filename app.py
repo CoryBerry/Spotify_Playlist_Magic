@@ -176,22 +176,28 @@ def get_cached_playlists(sp, user_id):
     if cache and (now - cache.updated_at) < CACHE_TTL:
         return json.loads(cache.data), cache.updated_at, True
 
-    # Fetch fresh from Spotify
-    playlists = []
-    results   = sp.current_user_playlists(limit=50)
-    while results:
-        playlists.extend(results["items"])
-        results = sp.next(results) if results["next"] else None
+    # Fetch fresh from Spotify — fall back to stale cache on timeout/error
+    try:
+        playlists = []
+        results   = sp.current_user_playlists(limit=50)
+        while results:
+            playlists.extend(results["items"])
+            results = sp.next(results) if results["next"] else None
 
-    data = json.dumps(playlists)
-    if cache:
-        cache.data       = data
-        cache.updated_at = now
-    else:
-        db.session.add(PlaylistCache(user_id=user_id, data=data, updated_at=now))
-    db.session.commit()
+        data = json.dumps(playlists)
+        if cache:
+            cache.data       = data
+            cache.updated_at = now
+        else:
+            db.session.add(PlaylistCache(user_id=user_id, data=data, updated_at=now))
+        db.session.commit()
+        return playlists, now, False
 
-    return playlists, now, False
+    except Exception:
+        # Spotify API timed out or errored — serve stale cache if available
+        if cache:
+            return json.loads(cache.data), cache.updated_at, True
+        return [], now, False
 
 
 # ---------------------------------------------------------------
@@ -881,6 +887,50 @@ def plex_stats(playlist_key):
 
 # ---------------------------------------------------------------
 # Routes — Recently Created
+# ---------------------------------------------------------------
+
+
+@app.route("/debug/playlists")
+def debug_playlists():
+    sp = get_spotify_client()
+    if not sp:
+        return redirect(url_for("spotify_login"))
+
+    rows = []
+    try:
+      results = sp.current_user_playlists(limit=50)
+    except Exception as e:
+        return f"<h3>Spotify API error</h3><pre>{e}</pre><a href='/spotify/playlists'>← Back</a>"
+    while results:
+        for p in results["items"]:
+            if p is None:
+                rows.append("<tr><td colspan=5 class='text-danger'>null item</td></tr>")
+                continue
+            owner    = p.get("owner") or {}
+            tracks   = p.get("tracks") or {}
+            name     = p.get("name", "?")
+            pid      = p.get("id", "?")
+            owner_id = owner.get("id", "null")
+            total    = tracks.get("total", "null")
+            flag     = " ⚠️" if owner_id == "spotify" else ""
+            rows.append(
+                f"<tr><td>{name}</td><td>{pid}</td>"
+                f"<td>{owner_id}{flag}</td><td>{total}</td></tr>"
+            )
+        results = sp.next(results) if results["next"] else None
+
+    table = (
+        "<table class='table table-sm table-striped' style='font-size:0.85rem'>"
+        "<thead><tr><th>Name</th><th>ID</th><th>Owner</th><th>Tracks</th></tr></thead>"
+        "<tbody>" + "".join(rows) + "</tbody></table>"
+    )
+    return (
+        f"<h3>Raw playlist dump ({len(rows)} items)</h3>"
+        f"<p class='text-muted'>⚠️ = Spotify-owned. <a href='/spotify/playlists'>← Back</a></p>"
+        + table
+    )
+
+
 # ---------------------------------------------------------------
 
 @app.route("/recently-created")
