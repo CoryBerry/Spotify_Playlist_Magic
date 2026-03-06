@@ -485,6 +485,7 @@ def spotify_build():
         TrackHistory.used_at  >= cutoff
     ).group_by(TrackHistory.track_id).all()
     on_cooldown = {r.track_id for r in raw if r.n >= settings.cooldown_max_plays}
+    cooldown_excluded = sum(sum(1 for t in tracks if t in on_cooldown) for tracks in all_tracks.values())
     for pid in list(all_tracks):
         fresh = [t for t in all_tracks[pid] if t not in on_cooldown]
         all_tracks[pid] = fresh if len(fresh) >= block_size else all_tracks[pid]
@@ -571,7 +572,9 @@ def spotify_build():
         db.session.add(TrackHistory(track_id=uri, provider="spotify"))
     db.session.commit()
 
-    return render_template("spotify_done.html", playlist=new_playlist, track_count=len(track_uris))
+    return render_template("spotify_done.html", playlist=new_playlist, track_count=len(track_uris),
+                           cooldown_excluded=cooldown_excluded,
+                           source_names=list(playlist_names.values()))
 
 
 @app.route("/spotify/album-blaster")

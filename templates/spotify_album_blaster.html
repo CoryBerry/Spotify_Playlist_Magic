@@ -102,8 +102,11 @@
       applyFilter();
     }
 
+    const _savedSort = localStorage.getItem("sort_albumblaster");
+    if (_savedSort) { sorter.value = _savedSort; applySort(); }
+
     filter.addEventListener("input", applyFilter);
-    sorter.addEventListener("change", applySort);
+    sorter.addEventListener("change", () => { localStorage.setItem("sort_albumblaster", sorter.value); applySort(); });
 
     document.querySelectorAll(".tag-filter-btn").forEach(btn => {
       btn.addEventListener("click", () => {

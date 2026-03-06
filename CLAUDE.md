@@ -109,3 +109,11 @@ TrackHistory      # track_id + used_at — 7-day cooldown pool to avoid replayin
 - SQLite is fine; no plans to move to Postgres
 - No CSRF protection — acceptable for localhost; warn before any server deployment
 - **Spotify OAuth callback URI must use `127.0.0.1`, not `localhost`** — Spotify treats them as different origins and will reject the callback with a redirect_uri mismatch. Always use `http://127.0.0.1:5000/callback` in both the Spotify app dashboard and `.env`.
+
+
+## TODO / Upcoming
+- [ ] Create wirefunk GitHub account
+- [ ] New repo under wirefunk (fresh, no history)
+- [ ] Set local git config: user.name + user.email to wirefunk
+- [ ] Copy project files over, initial commit as wirefunk
+- [ ] Polish pass before r/truespotify post

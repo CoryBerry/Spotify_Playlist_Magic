@@ -235,8 +235,12 @@
       counter.textContent = visible + " shown";
     }
 
+    // Restore saved sort
+    const _savedSort = localStorage.getItem("sort_plexmix");
+    if (_savedSort) sorter.value = _savedSort;
+
     filter.addEventListener("input", applyFilter);
-    sorter.addEventListener("change", () => { applySort(); applyFilter(); });
+    sorter.addEventListener("change", () => { localStorage.setItem("sort_plexmix", sorter.value); applySort(); applyFilter(); });
     minTracksEl.addEventListener("input", () => {
       minTracksLabel.textContent = getMinTracks();
       applyFilter();

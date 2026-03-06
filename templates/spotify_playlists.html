@@ -288,9 +288,13 @@
       counter.textContent = visible + " shown";
     }
 
+    // Restore saved sort
+    const _savedSort = localStorage.getItem("sort_blockmix");
+    if (_savedSort) { sorter.value = _savedSort; applySort(); }
+
     filter.addEventListener("input", applyFilter);
     document.querySelectorAll('input[name="ownerFilter"]').forEach(r => r.addEventListener("change", applyFilter));
-    sorter.addEventListener("change", () => { applySort(); applyFilter(); });
+    sorter.addEventListener("change", () => { localStorage.setItem("sort_blockmix", sorter.value); applySort(); applyFilter(); });
     minTracksEl.addEventListener("input", () => {
       minTracksLabel.textContent = getMinTracks();
       applyFilter();

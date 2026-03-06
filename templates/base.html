@@ -9,24 +9,25 @@
 </head>
 <body class="bg-light">
 
+  {% set path = request.path %}
   <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
     <div class="container">
       <a class="navbar-brand" href="/">Spotify Playlist Magic</a>
       <div class="navbar-nav ms-auto">
-        <a class="nav-link" href="/">Home</a>
-        <a class="nav-link" href="/spotify">Block Mix</a>
-        <a class="nav-link" href="/spotify/album-blaster">Album Blaster</a>
-        <a class="nav-link" href="/spotify/text-import">Text Import</a>
-        <a class="nav-link" href="/spotify/manage">Manage</a>
+        <a class="nav-link {% if path == '/' %}active{% endif %}" href="/">Home</a>
+        <a class="nav-link {% if path in ['/spotify', '/spotify/playlists', '/spotify/build'] %}active{% endif %}" href="/spotify">Block Mix</a>
+        <a class="nav-link {% if path.startswith('/spotify/album-blaster') or path == '/spotify/album-blast' %}active{% endif %}" href="/spotify/album-blaster">Album Blaster</a>
+        <a class="nav-link {% if path.startswith('/spotify/text-import') %}active{% endif %}" href="/spotify/text-import">Text Import</a>
+        <a class="nav-link {% if path == '/spotify/manage' %}active{% endif %}" href="/spotify/manage">Manage</a>
         {% if plex_enabled %}
-          <span class="nav-link text-secondary" style="cursor:default;">|</span>
-          <a class="nav-link text-info" href="/plex/playlists">Plex Mix</a>
-          <a class="nav-link text-info" href="/plex/album-blaster">Plex Blast</a>
+          <span class="nav-link text-secondary" style="cursor:default; padding-left:4px; padding-right:4px;">|</span>
+          <a class="nav-link text-info {% if path in ['/plex', '/plex/playlists', '/plex/build'] %}active{% endif %}" href="/plex/playlists">Plex Mix</a>
+          <a class="nav-link text-info {% if path.startswith('/plex/album-blaster') or path == '/plex/album-blast' %}active{% endif %}" href="/plex/album-blaster">Plex Blast</a>
         {% endif %}
-        <span class="nav-link text-secondary" style="cursor:default;">|</span>
-        <a class="nav-link" href="/recently-created">Recent</a>
-        <a class="nav-link" href="/settings">Settings</a>
-{% if session.spotify_token %}
+        <span class="nav-link text-secondary" style="cursor:default; padding-left:4px; padding-right:4px;">|</span>
+        <a class="nav-link {% if path.startswith('/recently-created') %}active{% endif %}" href="/recently-created">Recent</a>
+        <a class="nav-link {% if path == '/settings' %}active{% endif %}" href="/settings">Settings</a>
+        {% if session.spotify_token %}
           <a class="nav-link text-warning" href="/logout">Disconnect Spotify</a>
         {% endif %}
       </div>

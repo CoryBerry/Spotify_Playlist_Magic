@@ -76,8 +76,11 @@
       applyFilter();
     }
 
+    const _savedSort = localStorage.getItem("sort_plexblaster");
+    if (_savedSort) { sorter.value = _savedSort; applySort(); }
+
     filter.addEventListener("input", applyFilter);
-    sorter.addEventListener("change", applySort);
+    sorter.addEventListener("change", () => { localStorage.setItem("sort_plexblaster", sorter.value); applySort(); });
 
     applyFilter();
   </script>

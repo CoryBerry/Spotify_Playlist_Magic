@@ -192,8 +192,12 @@
       updateCounts();
     });
 
+    // Restore saved sort — fire the sort logic after the handler is defined below
+    const _savedSort = localStorage.getItem("sort_manage");
+
     // Sort
     sortSelect.addEventListener("change", () => {
+      localStorage.setItem("sort_manage", sortSelect.value);
       const val  = sortSelect.value;
       const rows = getRows();
       rows.sort((a, b) => {
@@ -282,6 +286,7 @@
     });
 
     updateCounts();
+    if (_savedSort) { sortSelect.value = _savedSort; sortSelect.dispatchEvent(new Event("change")); }
 
     // ---------------------------------------------------------------
     // Tagging
