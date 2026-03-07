@@ -339,9 +339,17 @@
     let activeTag = "";
     document.querySelectorAll(".tag-filter-btn").forEach(btn => {
       btn.addEventListener("click", () => {
-        document.querySelectorAll(".tag-filter-btn").forEach(b => b.classList.remove("active"));
-        btn.classList.add("active");
-        activeTag = btn.dataset.tag;
+        const clickedTag = btn.dataset.tag;
+        if (clickedTag && activeTag === clickedTag) {
+          // Deselect — revert to All
+          activeTag = "";
+          document.querySelectorAll(".tag-filter-btn").forEach(b => b.classList.remove("active"));
+          document.querySelector('.tag-filter-btn[data-tag=""]').classList.add("active");
+        } else {
+          document.querySelectorAll(".tag-filter-btn").forEach(b => b.classList.remove("active"));
+          btn.classList.add("active");
+          activeTag = clickedTag;
+        }
         applyFilter();
       });
     });

@@ -95,7 +95,14 @@ def _now_label():
 
 def _date_label():
     now = datetime.now()
-    return now.strftime('%b ') + str(now.day)  # e.g. "Mar 3"
+    return now.strftime("%B ") + str(now.day) + now.strftime(" '%y")  # e.g. "March 6 '26"
+
+def _period_of_day():
+    hour = datetime.now().hour
+    if hour < 12:  return "Morning"
+    if hour < 17:  return "Afternoon"
+    if hour < 21:  return "Evening"
+    return "Night"
 
 app = Flask(__name__)
 _secret_key = os.environ.get("SECRET_KEY")
@@ -414,7 +421,8 @@ def spotify_playlists():
     # Only show playlists with enough tracks to be useful for block mixing
     # Guard against null items and null tracks fields the Spotify API occasionally returns
     playlists = [p for p in playlists
-                 if p and p.get("tracks") and p["tracks"]["total"] >= 20]
+                 if p and p.get("tracks") and p["tracks"]["total"] >= 20
+                 and "Block Mix" not in p.get("name", "")]
 
     # Pass tag data so Block Mix can filter by tag
     all_tags = PlaylistTag.query.filter_by(user_id="local").all()
@@ -532,8 +540,11 @@ def spotify_build():
     # Create playlist
     user_id        = sp.me()["id"]
     prefix        = request.form.get("playlist_prefix", "").strip()
-    base          = f"{prefix} : Block Mix" if prefix else "Block Mix"
-    playlist_name = f"{base} {_date_label()}"
+    if prefix:
+        base = f"{prefix} : Block Mix"
+    else:
+        base = f"{datetime.now().strftime('%A')} {_period_of_day()} : Block Mix"
+    playlist_name = f"{base} : {_date_label()}"
     new_playlist  = sp.user_playlist_create(user_id, playlist_name, public=False)
     # Add tracks in batches of 100 — Spotify's API limit per request
     for i in range(0, len(track_uris), 100):
@@ -824,7 +835,8 @@ def plex_playlists():
         return err
 
     playlists = [p for p in plex.playlists()
-                 if p.playlistType == "audio" and p.leafCount >= PLEX_MIN_TRACKS]
+                 if p.playlistType == "audio" and p.leafCount >= PLEX_MIN_TRACKS
+                 and "Block Mix" not in p.title]
 
     usage_records   = PlaylistUsage.query.filter_by(provider="plex").all()
     usage_map_count = {r.playlist_id: r.use_count for r in usage_records}
@@ -904,8 +916,11 @@ def plex_build():
     block_tracks = deduped
 
     prefix       = request.form.get("playlist_prefix", "").strip()
-    base         = f"{prefix} Block Mix" if prefix else "Block Mix"
-    title        = f"{base} {_date_label()}"
+    if prefix:
+        base = f"{prefix} : Block Mix"
+    else:
+        base = f"{datetime.now().strftime('%A')} {_period_of_day()} : Block Mix"
+    title        = f"{base} : {_date_label()}"
     new_playlist = plex.createPlaylist(title, items=block_tracks)
 
     db.session.add(CreatedPlaylist(
