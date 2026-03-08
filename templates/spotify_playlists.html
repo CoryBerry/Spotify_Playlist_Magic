@@ -99,7 +99,7 @@
               <div class="fw-bold" id="trackCountTotal">— tracks</div>
               <div class="text-muted small" id="timeEstimate"></div>
             </div>
-            <button type="submit" class="btn btn-success">Build Playlist</button>
+            <button type="submit" id="buildBtn" class="btn btn-success">Build Playlist</button>
           </div>
         </div>
       </div>
@@ -126,7 +126,8 @@
              data-order="{{ loop.index }}"
              data-tags="{{ tag_map.get(playlist.id, []) | join(',') | lower }}"
              data-usage="{{ usage_map_count.get(playlist.id, 0) }}"
-             data-owner="{{ 'me' if playlist.owner and playlist.owner.id == user_id else 'other' }}">
+             data-owner="{{ 'me' if playlist.owner and playlist.owner.id == user_id else 'other' }}"
+             data-playlist-id="{{ playlist.id }}">
           <div class="card h-100 {% if playlist.tracks.total >= 500 %}border-warning{% endif %}">
             {% if playlist.images %}
               <img src="{{ playlist.images[0].url }}" class="card-img-top" style="height: 160px; object-fit: cover;">
@@ -168,18 +169,34 @@
               {% if playlist.description %}
                 <p class="mt-1 mb-0 small text-muted">{{ playlist.description }}</p>
               {% endif %}
-              {% if tag_map.get(playlist.id) %}
-                <div class="mt-2 d-flex flex-wrap gap-1">
+              <div class="tag-area mt-2">
+                <div class="d-flex flex-wrap gap-1 tag-badges">
                   {% for tag in tag_map.get(playlist.id, []) %}
-                    <span class="badge bg-info text-dark">{{ tag }}</span>
+                    <span class="badge bg-info text-dark">{{ tag }} <span class="tag-remove ms-1" style="cursor:pointer" data-tag="{{ tag }}">×</span></span>
                   {% endfor %}
                 </div>
-              {% endif %}
+                <div class="d-flex gap-1 mt-1">
+                  <input type="text" class="form-control form-control-sm tag-input" placeholder="Add tag…" list="tag-suggestions" style="max-width:120px;">
+                  <button type="button" class="btn btn-outline-info btn-sm tag-add-btn">+</button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
       {% endfor %}
     </div>
+
+  <datalist id="tag-suggestions">
+    {% for tag in all_tags %}
+      <option value="{{ tag }}">
+    {% endfor %}
+  </datalist>
+
+  <!-- Build loading overlay -->
+  <div id="buildOverlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:9999; flex-direction:column; align-items:center; justify-content:center; gap:16px;">
+    <div class="spinner-border text-light" style="width:3.5rem; height:3.5rem;" role="status"></div>
+    <div class="text-white fw-semibold fs-5">Building your playlist…</div>
+  </div>
 
   </form>
 
@@ -337,25 +354,110 @@
 
     // Tag filter
     let activeTag = "";
+    function tagFilterClickHandler() {
+      const clickedTag = this.dataset.tag;
+      if (clickedTag && activeTag === clickedTag) {
+        activeTag = "";
+        document.querySelectorAll(".tag-filter-btn").forEach(b => b.classList.remove("active"));
+        document.querySelector('.tag-filter-btn[data-tag=""]').classList.add("active");
+      } else {
+        document.querySelectorAll(".tag-filter-btn").forEach(b => b.classList.remove("active"));
+        this.classList.add("active");
+        activeTag = clickedTag;
+      }
+      applyFilter();
+    }
     document.querySelectorAll(".tag-filter-btn").forEach(btn => {
-      btn.addEventListener("click", () => {
-        const clickedTag = btn.dataset.tag;
-        if (clickedTag && activeTag === clickedTag) {
-          // Deselect — revert to All
-          activeTag = "";
-          document.querySelectorAll(".tag-filter-btn").forEach(b => b.classList.remove("active"));
-          document.querySelector('.tag-filter-btn[data-tag=""]').classList.add("active");
-        } else {
-          document.querySelectorAll(".tag-filter-btn").forEach(b => b.classList.remove("active"));
-          btn.classList.add("active");
-          activeTag = clickedTag;
-        }
-        applyFilter();
-      });
+      btn.addEventListener("click", tagFilterClickHandler);
     });
 
     updateCount();
     updateTrackCount();
+
+    // Build loading overlay — guard flag prevents double-submit
+    let building = false;
+    document.querySelector("form").addEventListener("submit", e => {
+      if (building) { e.preventDefault(); return; }
+      building = true;
+      document.getElementById("buildOverlay").style.display = "flex";
+      document.getElementById("buildBtn").disabled = true;
+    });
+
+    // ── Inline tagging ──────────────────────────────────────────────────────
+    function tagRequest(url, playlistId, tag, card) {
+      fetch(url, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({playlist_id: playlistId, tag})
+      })
+      .then(r => r.json())
+      .then(data => {
+        renderCardTags(card, data.tags);
+        refreshTagFilter(data.tags);
+      });
+    }
+
+    function renderCardTags(card, tags) {
+      const container = card.querySelector(".tag-badges");
+      container.innerHTML = tags.map(t =>
+        `<span class="badge bg-info text-dark">${t} <span class="tag-remove ms-1" style="cursor:pointer" data-tag="${t}">×</span></span>`
+      ).join("");
+      // Update data-tags for filter
+      card.dataset.tags = tags.join(",").toLowerCase();
+      applyFilter();
+    }
+
+    function refreshTagFilter(newTags) {
+      // Add any brand-new tags to the filter bar and datalist
+      const bar = document.querySelector(".mt-3.d-flex.flex-wrap");
+      if (!bar) return;
+      const existing = new Set([...bar.querySelectorAll(".tag-filter-btn")].map(b => b.dataset.tag));
+      newTags.forEach(tag => {
+        if (!existing.has(tag)) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "btn btn-sm btn-outline-info tag-filter-btn";
+          btn.dataset.tag = tag;
+          btn.textContent = tag;
+          btn.addEventListener("click", tagFilterClickHandler);
+          bar.appendChild(btn);
+          // datalist
+          const opt = document.createElement("option");
+          opt.value = tag;
+          document.getElementById("tag-suggestions").appendChild(opt);
+        }
+      });
+    }
+
+    grid.addEventListener("click", e => {
+      const card = e.target.closest(".playlist-card");
+      if (!card) return;
+      const pid = card.dataset.playlistId;
+
+      if (e.target.classList.contains("tag-add-btn")) {
+        const input = card.querySelector(".tag-input");
+        const tag   = input.value.trim().toLowerCase();
+        if (!tag) return;
+        tagRequest("/spotify/tag/add", pid, tag, card);
+        input.value = "";
+        return;
+      }
+
+      if (e.target.classList.contains("tag-remove")) {
+        tagRequest("/spotify/tag/remove", pid, e.target.dataset.tag, card);
+      }
+    });
+
+    grid.addEventListener("keydown", e => {
+      if (e.key !== "Enter" || !e.target.classList.contains("tag-input")) return;
+      e.preventDefault();
+      const card = e.target.closest(".playlist-card");
+      const tag  = e.target.value.trim().toLowerCase();
+      if (!tag) return;
+      tagRequest("/spotify/tag/add", card.dataset.playlistId, tag, card);
+      e.target.value = "";
+    });
+    // ────────────────────────────────────────────────────────────────────────
 
     // Review mode — show only checked playlists
     let reviewMode = false;

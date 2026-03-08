@@ -513,18 +513,29 @@ def spotify_build():
         cover_ids  = cycle[:4]
         cover_uris = [random.choice(all_tracks[pid]) for pid in cover_ids if all_tracks[pid]]
 
-    # Build the main block list, inserting a pinned block every pin_interval non-pinned blocks
+    # Build the main block list, inserting a pinned block every pin_interval non-pinned blocks.
+    # Re-shuffle the cycle each repeat so same-playlist blocks don't cluster at repeat boundaries.
     block_uris   = []
     block_count  = 0
     pinned_pool  = all_tracks.get(pinned_id, []) if pinned_id in all_tracks else []
+    last_pid     = None
     for _ in range(repeats):
-        for playlist_id in cycle:
+        shuffled = cycle[:]
+        random.shuffle(shuffled)
+        # If the first entry matches the last playlist of the previous repeat, swap it away
+        if last_pid and shuffled and shuffled[0] == last_pid:
+            for i in range(1, len(shuffled)):
+                if shuffled[i] != last_pid:
+                    shuffled[0], shuffled[i] = shuffled[i], shuffled[0]
+                    break
+        for playlist_id in shuffled:
             tracks = all_tracks[playlist_id]
             sample = random.sample(tracks, min(block_size, len(tracks)))
             block_uris.extend(sample)
             block_count += 1
             if pinned_pool and block_count % pin_interval == 0:
                 block_uris.extend(random.sample(pinned_pool, min(block_size, len(pinned_pool))))
+        last_pid = shuffled[-1] if shuffled else last_pid
 
     # Prepend cover tracks, remove them from block list, then deduplicate preserving order
     cover_set  = set(cover_uris)
@@ -897,14 +908,23 @@ def plex_build():
     block_tracks = []
     block_count  = 0
     pinned_pool  = all_tracks.get(pinned_key, []) if pinned_key in all_tracks else []
+    last_key     = None
     for _ in range(repeats):
-        for key in cycle:
+        shuffled = cycle[:]
+        random.shuffle(shuffled)
+        if last_key and shuffled and shuffled[0] == last_key:
+            for i in range(1, len(shuffled)):
+                if shuffled[i] != last_key:
+                    shuffled[0], shuffled[i] = shuffled[i], shuffled[0]
+                    break
+        for key in shuffled:
             tracks = all_tracks[key]
             sample = random.sample(tracks, min(block_size, len(tracks)))
             block_tracks.extend(sample)
             block_count += 1
             if pinned_pool and block_count % pin_interval == 0:
                 block_tracks.extend(random.sample(pinned_pool, min(block_size, len(pinned_pool))))
+        last_key = shuffled[-1] if shuffled else last_key
 
     # Deduplicate preserving order
     seen_keys   = set()

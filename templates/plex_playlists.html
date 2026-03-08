@@ -78,7 +78,7 @@
               <div class="fw-bold" id="trackCountTotal">— tracks</div>
               <div class="text-muted small" id="timeEstimate"></div>
             </div>
-            <button type="submit" class="btn btn-info">Build Plex Playlist</button>
+            <button type="submit" id="buildBtn" class="btn btn-info">Build Plex Playlist</button>
           </div>
         </div>
       </div>
@@ -131,6 +131,12 @@
         </div>
       {% endfor %}
     </div>
+
+  <!-- Build loading overlay -->
+  <div id="buildOverlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:9999; flex-direction:column; align-items:center; justify-content:center; gap:16px;">
+    <div class="spinner-border text-light" style="width:3.5rem; height:3.5rem;" role="status"></div>
+    <div class="text-white fw-semibold fs-5">Building your playlist…</div>
+  </div>
 
   </form>
 
@@ -283,6 +289,15 @@
 
     updateCount();
     updateTrackCount();
+
+    // Build loading overlay — guard flag prevents double-submit
+    let building = false;
+    document.querySelector("form").addEventListener("submit", e => {
+      if (building) { e.preventDefault(); return; }
+      building = true;
+      document.getElementById("buildOverlay").style.display = "flex";
+      document.getElementById("buildBtn").disabled = true;
+    });
 
     // Review mode — show only checked playlists
     let reviewMode = false;
