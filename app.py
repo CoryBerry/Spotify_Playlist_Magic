@@ -172,6 +172,7 @@ class BuildSource(db.Model):
     created_playlist_id = db.Column(db.Integer, db.ForeignKey("created_playlist.id"), nullable=False)
     playlist_id         = db.Column(db.String(100), nullable=False)
     playlist_name       = db.Column(db.String(200), nullable=False)
+    owner_id            = db.Column(db.String(100), nullable=True)   # Spotify owner ID; None for pre-migration rows
     position            = db.Column(db.Integer,     nullable=False)  # 0-indexed order in cycle
 
 
@@ -302,22 +303,40 @@ def get_spotify_client():
     return spotipy.Spotify(auth=token_info["access_token"])
 
 
-CACHE_TTL  = timedelta(hours=1)
-VERIFY_TTL = timedelta(minutes=15)
+CACHE_TTL  = timedelta(hours=24)   # full re-fetch once a day
+VERIFY_TTL = timedelta(minutes=15)  # no API call at all under 15 min
 
 def get_cached_playlists(sp, user_id):
     """Return (playlists, updated_at, from_cache).
-    Serves from DB cache if under 1 hour old; otherwise re-fetches from Spotify."""
+
+    Three-tier TTL:
+      < 15 min  → serve cache, no API call
+      15 min–24h → fetch first page only; if total count unchanged, serve stale
+      > 24h     → full paginated re-fetch
+    """
     cache = PlaylistCache.query.filter_by(user_id=user_id).first()
     now   = datetime.now()
 
-    if cache and (now - cache.updated_at) < CACHE_TTL:
+    # Tier 1: hot cache — no API call
+    if cache and (now - cache.updated_at) < VERIFY_TTL:
         return json.loads(cache.data), cache.updated_at, True
 
-    # Fetch fresh from Spotify — fall back to stale cache on timeout/error
+    first_page = None  # reuse in full fetch if we already paid for it
+
+    # Tier 2: warm cache — one call to check if anything changed
+    if cache and (now - cache.updated_at) < CACHE_TTL:
+        try:
+            first_page = sp.current_user_playlists(limit=50)
+            if first_page["total"] == len(json.loads(cache.data)):
+                return json.loads(cache.data), cache.updated_at, True
+            # Total changed — fall through to full fetch, reusing first_page
+        except Exception:
+            return json.loads(cache.data), cache.updated_at, True
+
+    # Tier 3: cold cache or total changed — full paginated fetch
     try:
         playlists = []
-        results   = sp.current_user_playlists(limit=50)
+        results   = first_page or sp.current_user_playlists(limit=50)
         while results:
             playlists.extend(results["items"])
             results = sp.next(results) if results["next"] else None
@@ -332,7 +351,6 @@ def get_cached_playlists(sp, user_id):
         return playlists, now, False
 
     except Exception:
-        # Spotify API timed out or errored — serve stale cache if available
         if cache:
             return json.loads(cache.data), cache.updated_at, True
         return [], now, False
@@ -467,9 +485,11 @@ def spotify_build():
 
     # Fetch all tracks for each playlist — paginate to get the full pool
     all_tracks     = {}
-    playlist_names = {}
+    playlist_names  = {}
+    playlist_owners = {}
     for playlist_id in selected_ids:
-        playlist_names[playlist_id] = request.form.get(f"name_{playlist_id}", playlist_id)
+        playlist_names[playlist_id]  = request.form.get(f"name_{playlist_id}", playlist_id)
+        playlist_owners[playlist_id] = request.form.get(f"owner_{playlist_id}", "")
         tracks  = []
         results = sp.playlist_tracks(playlist_id, fields="next,items(track(uri))")
         while results:
@@ -584,6 +604,7 @@ def spotify_build():
             created_playlist_id=cp.id,
             playlist_id=pid,
             playlist_name=playlist_names.get(pid, pid),
+            owner_id=playlist_owners.get(pid) or None,
             position=pos
         ))
     db.session.commit()
@@ -1068,10 +1089,12 @@ def spotify_stats(playlist_id):
                      .order_by(BuildSource.position)
                      .all()) if cp else []
 
+    user_id = sp.me()["id"]
     return render_template("spotify_stats.html", playlist=playlist,
                            track_count=len(tracks), hours=hours, minutes=minutes,
                            unique_artists=len(artists), top_artists=top_artists,
-                           use_count=use_count, build_sources=build_sources)
+                           use_count=use_count, build_sources=build_sources,
+                           user_id=user_id)
 
 
 @app.route("/spotify/stats")

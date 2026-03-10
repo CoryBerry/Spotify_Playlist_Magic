@@ -136,6 +136,7 @@
               <div class="form-check">
                 <input class="form-check-input playlist-check" type="checkbox" name="playlist_ids" value="{{ playlist.id }}" id="pl_{{ playlist.id }}">
                 <input type="hidden" name="name_{{ playlist.id }}" value="{{ playlist.name }}">
+                <input type="hidden" name="owner_{{ playlist.id }}" value="{{ playlist.owner.id if playlist.owner else '' }}">
                 <label class="form-check-label fw-bold" for="pl_{{ playlist.id }}">{{ playlist.name }}</label>
               </div>
               <div class="playlist-controls mt-2" style="display:none">

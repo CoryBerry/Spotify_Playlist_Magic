@@ -39,7 +39,7 @@
       <h5>Source Playlists</h5>
       <ol class="ps-3 mb-0">
         {% for src in build_sources %}
-          <li class="small text-muted">{{ src.playlist_name }}</li>
+          <li class="small text-muted">{{ src.playlist_name }}{% if src.owner_id and src.owner_id != user_id %} 👋{% endif %}</li>
         {% endfor %}
       </ol>
     </div>
