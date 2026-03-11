@@ -7,25 +7,36 @@ A personal Flask web app for building and managing Spotify playlists in ways the
 ## Tools
 
 ### 🎵 Block Mix
+
 Select 2 or more playlists and build a new playlist where songs rotate in blocks — 4 from one genre, then 4 from another, like the old Pandora station experience. Supports configurable block size, repeats, weighted mixing, and a pinned playlist that recurs at a set interval. Cover art is automatically seeded from across your selected playlists.
 
 ### 💥 Album Blaster
+
 Browse any playlist, pick tracks you like, and blast their full albums into a brand new playlist. Great for rediscovering albums you forgot you loved.
 
 ### 🗂️ Manage Playlists
-Browse all your playlists in a filterable, sortable table. Preview tracks, toggle public/private visibility, and bulk delete playlists you no longer need. *(Spotify only)*
+
+Browse all your playlists in a filterable, sortable table. Preview tracks, toggle public/private visibility, and bulk delete playlists you no longer need. Sort by least used or oldest use, and filter to playlists you've never mixed to find forgotten gems. _(Spotify only)_
 
 ### 📄 Text Import
-Paste a plain-text list of albums or tracks — one per line — and the app builds a Spotify playlist from it. Works great with LLM-generated suggestions. Supports `Artist - Album` and `Artist - Track` formats (auto-detected). Two modes: **Trust It** creates the playlist immediately using the best Spotify match per line, or **Manual Select** shows the top candidates for each line so you can correct any mismatches before creating. *(Spotify only)*
+
+Paste a plain-text list of albums or tracks — one per line — and the app builds a Spotify playlist from it. Works great with LLM-generated suggestions. Supports `Artist - Album` and `Artist - Track` formats (auto-detected). Two modes: **Trust It** creates the playlist immediately using the best Spotify match per line, or **Manual Select** shows the top candidates for each line so you can correct any mismatches before creating. _(Spotify only)_
 
 ### 🏷️ Playlist Tags
-Tag your playlists with free-form labels like "chill", "office", or "instrumental". Tags appear in Block Mix as filter buttons so you can quickly narrow down to the right vibe without hunting through hundreds of playlists. *(Spotify only)*
+
+Tag your playlists with free-form labels like "chill", "office", or "instrumental". Tags appear in Block Mix as filter buttons so you can quickly narrow down to the right vibe without hunting through hundreds of playlists. _(Spotify only)_
 
 ### 📊 Playlist Stats
+
 See track count, total runtime, unique artist count, and a top-10 artist breakdown for any playlist. Also shows how many times it's been used in a Block Mix build.
 
 ### 🕓 Recently Created
-A history of every Block Mix and Album Blast you've built, with creation date, track count, and build time. Shows whether each playlist is still alive or has been deleted. You can remove dead entries in bulk or delete a playlist directly from this page.
+
+A history of every Block Mix and Album Blast you've built, with creation date, track count, and build time. Shows whether each playlist is still alive or has been deleted. You can remove dead entries in bulk or delete a playlist directly from this page. Also displays a live cooldown summary — how many tracks are on ice, when they warm up, and how many have thawed over time.
+
+### ⚙️ Settings
+
+Configure the track cooldown window (default: 7 days) and how many times a track must be used before it goes on ice (default: 2 plays). Also includes a **Thaw Everything Now** button to immediately clear all track history and make every track available for the next build.
 
 ---
 
@@ -34,9 +45,10 @@ A history of every Block Mix and Album Blast you've built, with creation date, t
 ### 1. Clone and install dependencies
 
 ```bash
-git clone https://github.com/CoryBerry/claudone.git
-cd claudone
+git clone https://github.com/CoryBerry/Spotify_Playlist_Magic.git
+go to the "Spotify_Playlist_Magic" folder or where you installed it
 pip install -r requirements.txt
+     - You must have Python installed and properly pathed.
 ```
 
 ### 2. Create a Spotify Developer app
@@ -109,7 +121,7 @@ For a personal localhost setup this isn't a real concern, but if you're hosting 
 1. You pick two or more playlists and configure a block size (2–10 tracks) and number of repeats (1–10 cycles).
 2. The app builds a rotating cycle of your selected playlists. Optional **weights** let you make one playlist appear more frequently than others.
 3. Optionally pin one playlist to recur every N blocks (good for a "home base" playlist woven through the mix).
-4. Tracks used in any build in the last **7 days** are automatically excluded from new builds, so you don't hear the same songs back-to-back across sessions. (If a playlist's fresh pool is too small, the cooldown is ignored for that playlist so the build doesn't fail.)
+4. Tracks are cooled down by **song ID** — if the same song appears in multiple source playlists, it still only counts once. Tracks used more than the configured limit (default: 2 plays within 7 days) are excluded from new builds. If a playlist's fresh pool drops below the block size, the cooldown is ignored for that playlist so the build doesn't fail. Expired tracks are automatically thawed when you visit Block Mix or Recently Created, and a banner tells you how many were freed.
 5. Duplicates are removed while preserving block order. If "Cover Art" seeding is on, one track from each selected playlist is prepended so the playlist thumbnail represents each source.
 
 ---
