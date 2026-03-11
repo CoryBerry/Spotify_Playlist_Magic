@@ -38,10 +38,15 @@
     <div class="tab-pane fade show active" id="active-pane" role="tabpanel">
       {% if cooldown_stats %}
         <p class="text-muted small mb-2">
-          🧊 <strong>{{ cooldown_stats.total }}</strong> tracks on ice
+          🧊 <strong>{{ cooldown_stats.total }}</strong> on ice
           &nbsp;&middot;&nbsp; Warms up in {{ cooldown_stats.cooldown_days - cooldown_stats.buckets[0][0] }}d: {{ cooldown_stats.buckets[0][1] }}
           &nbsp;&middot;&nbsp; Warms up in {{ cooldown_stats.cooldown_days - cooldown_stats.buckets[1][0] }}d: {{ cooldown_stats.buckets[1][1] }}
           &nbsp;&middot;&nbsp; Warms up in {{ cooldown_stats.cooldown_days - cooldown_stats.buckets[2][0] }}d: {{ cooldown_stats.buckets[2][1] }}
+          &nbsp;&middot;&nbsp; 🌊 <strong>{{ cooldown_stats.thawed }}</strong> thawed
+          &nbsp;&middot;&nbsp; 🔄 <strong>{{ cooldown_stats.total_plays }}</strong> total plays
+          {% if cooldown_stats.multi_cycle > 0 %}
+            &nbsp;&middot;&nbsp; <strong>{{ cooldown_stats.multi_cycle }}</strong> tracks iced 2×+
+          {% endif %}
         </p>
       {% endif %}
       <div class="mb-3">

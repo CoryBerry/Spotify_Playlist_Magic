@@ -23,4 +23,12 @@
     <button type="submit" class="btn btn-primary">Save</button>
     <p class="text-muted small mt-3">Changes take effect on the next build.</p>
   </form>
+
+  <hr class="my-4" style="max-width: 480px;">
+
+  <form method="POST" action="/settings/thaw-all" style="max-width: 480px;"
+        onsubmit="return confirm('Thaw everything now? This clears all track history — all tracks will be available for the next build.')">
+    <button type="submit" class="btn btn-outline-secondary">🌊 Thaw Everything Now</button>
+    <p class="text-muted small mt-2">Clears the entire track history pool. All tracks become available on the next build, regardless of cooldown.</p>
+  </form>
 {% endblock %}

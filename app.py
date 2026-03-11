@@ -2,7 +2,7 @@
 # app.py — Spotify Tools
 # ---------------------------------------------------------------
 
-from flask import Flask, render_template, request, session, redirect, url_for, jsonify
+from flask import Flask, render_template, request, session, redirect, url_for, jsonify, flash
 from urllib.parse import urlparse
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timedelta
@@ -176,6 +176,16 @@ class BuildSource(db.Model):
     position            = db.Column(db.Integer,     nullable=False)  # 0-indexed order in cycle
 
 
+class ThawTally(db.Model):
+    """Monthly tally of tracks thawed from cooldown."""
+    id       = db.Column(db.Integer, primary_key=True)
+    year     = db.Column(db.Integer, nullable=False)
+    month    = db.Column(db.Integer, nullable=False)
+    provider = db.Column(db.String(20), nullable=False)
+    count    = db.Column(db.Integer, default=0, nullable=False)
+    __table_args__ = (db.UniqueConstraint("year", "month", "provider"),)
+
+
 class AppSettings(db.Model):
     id                 = db.Column(db.Integer, primary_key=True)
     cooldown_days      = db.Column(db.Integer, default=7)
@@ -211,7 +221,9 @@ def get_cooldown_stats(provider):
     s      = get_settings()
     cd     = s.cooldown_days
     cutoff = datetime.now() - timedelta(days=cd)
+    now    = datetime.now()
 
+    # Tracks used within the cooldown window
     rows = db.session.query(
         TrackHistory.track_id,
         func.count(TrackHistory.id).label("n"),
@@ -221,14 +233,25 @@ def get_cooldown_stats(provider):
         TrackHistory.used_at  >= cutoff
     ).group_by(TrackHistory.track_id).all()
 
-    on_ice = [r for r in rows if r.n >= s.cooldown_max_plays]
-    total  = len(on_ice)
+    on_ice     = [r for r in rows if r.n >= s.cooldown_max_plays]
+    on_ice_ids = {r.track_id for r in on_ice}
+
+    # All-time stats: unique tracks ever used + total play events
+    all_time = db.session.query(
+        TrackHistory.track_id,
+        func.count(TrackHistory.id).label("total_plays")
+    ).filter(
+        TrackHistory.provider == provider
+    ).group_by(TrackHistory.track_id).all()
+
+    total_plays = sum(r.total_plays for r in all_time)
+    multi_cycle = sum(1 for r in all_time if r.total_plays > s.cooldown_max_plays)
+    thawed      = db.session.query(func.sum(ThawTally.count)).filter_by(provider=provider).scalar() or 0
 
     # Bucket day values: 1/7, 3/7, 6/7 of cooldown_days
     b1 = max(1, round(cd / 7))
     b2 = max(1, round(3 * cd / 7))
     b3 = max(1, round(6 * cd / 7))
-    now = datetime.now()
 
     def _count_range(min_days, max_days):
         lo = now - timedelta(days=max_days)
@@ -236,10 +259,36 @@ def get_cooldown_stats(provider):
         return sum(1 for r in on_ice if lo <= r.last_used < hi)
 
     return {
-        "total":         total,
+        "total":         len(on_ice),
+        "thawed":        thawed,
+        "total_plays":   total_plays,
+        "multi_cycle":   multi_cycle,
         "buckets":       [(b1, _count_range(0, b1)), (b2, _count_range(b1, b2)), (b3, _count_range(b2, b3))],
         "cooldown_days": cd,
     }
+
+
+def auto_thaw(provider):
+    """Delete TrackHistory rows older than the cooldown window. Returns count of unique tracks thawed."""
+    s      = get_settings()
+    cutoff = datetime.now() - timedelta(days=s.cooldown_days)
+    rows   = TrackHistory.query.filter(
+        TrackHistory.provider == provider,
+        TrackHistory.used_at  <  cutoff
+    ).all()
+    if not rows:
+        return 0
+    unique = len({r.track_id for r in rows})
+    for r in rows:
+        db.session.delete(r)
+    now = datetime.now()
+    tally = ThawTally.query.filter_by(year=now.year, month=now.month, provider=provider).first()
+    if tally:
+        tally.count += unique
+    else:
+        db.session.add(ThawTally(year=now.year, month=now.month, provider=provider, count=unique))
+    db.session.commit()
+    return unique
 
 
 # ---------------------------------------------------------------
@@ -432,6 +481,10 @@ def spotify_playlists():
     sp = get_spotify_client()
     if not sp:
         return redirect(url_for("spotify_login"))
+
+    thawed = auto_thaw("spotify")
+    if thawed:
+        flash(f"🌊 {thawed} track{'s' if thawed != 1 else ''} thawed from cooldown", "info")
 
     user_id = sp.me()["id"]
     playlists, cache_updated_at, _ = get_cached_playlists(sp, user_id)
@@ -772,8 +825,11 @@ def spotify_manage():
     for t in all_tags:
         tag_map.setdefault(t.playlist_id, []).append(t.tag)
 
+    usages    = PlaylistUsage.query.filter_by(provider="spotify").all()
+    usage_map = {u.playlist_id: u for u in usages}
+
     return render_template("spotify_manage.html", playlists=playlists, user_id=user_id,
-                           tag_map=tag_map, cache_updated_at=cache_updated_at,
+                           tag_map=tag_map, usage_map=usage_map, cache_updated_at=cache_updated_at,
                            cache_refresh_url=url_for("cache_refresh") + "?next=" + request.path)
 
 
@@ -1285,6 +1341,14 @@ def recently_created():
     plex = get_plex()
     now  = datetime.now()
 
+    thawed = 0
+    if sp:
+        thawed += auto_thaw("spotify")
+    if plex:
+        thawed += auto_thaw("plex")
+    if thawed:
+        flash(f"🌊 {thawed} track{'s' if thawed != 1 else ''} thawed from cooldown", "info")
+
     records = CreatedPlaylist.query.order_by(CreatedPlaylist.created_at.desc()).all()
 
     # Verify playlists not checked recently — skip if we can't reach that provider
@@ -1397,6 +1461,27 @@ def settings_page():
             pass
         return redirect(url_for("settings_page"))
     return render_template("settings.html", settings=s)
+
+
+@app.route("/settings/thaw-all", methods=["POST"])
+def settings_thaw_all():
+    from sqlalchemy import func as _func
+    now = datetime.now()
+    rows = db.session.query(
+        TrackHistory.provider,
+        _func.count(TrackHistory.track_id.distinct()).label("unique")
+    ).group_by(TrackHistory.provider).all()
+    for provider, unique in rows:
+        tally = ThawTally.query.filter_by(year=now.year, month=now.month, provider=provider).first()
+        if tally:
+            tally.count += unique
+        else:
+            db.session.add(ThawTally(year=now.year, month=now.month, provider=provider, count=unique))
+    count = sum(u for _, u in rows)
+    TrackHistory.query.delete()
+    db.session.commit()
+    flash(f"🌊 All {count} track{'s' if count != 1 else ''} cleared — everything thawed", "success")
+    return redirect(url_for("settings_page"))
 
 
 if __name__ == "__main__":
