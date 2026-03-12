@@ -28,10 +28,27 @@
       <div class="form-text">File contents will be loaded into the text box above.</div>
     </div>
 
-    <div class="mb-3" style="max-width:400px;">
-      <label class="form-label fw-semibold">Playlist name <span class="text-muted fw-normal">(optional)</span></label>
-      <input type="text" name="playlist_name" class="form-control"
-             placeholder="Text Import">
+    <div class="row g-4 mb-3">
+      <div class="col-md-5">
+        <label class="form-label fw-semibold">New playlist name <span class="text-muted fw-normal">(optional)</span></label>
+        <input type="text" name="playlist_name" id="playlistNameInput" class="form-control"
+               placeholder="Text Import">
+      </div>
+      <div class="col-md-5">
+        <label class="form-label fw-semibold">Or add to existing playlist</label>
+        <input type="hidden" name="existing_playlist_id" id="existingPlaylistId">
+        <div id="existingSelectedBadge" class="d-none mb-1">
+          <span class="badge bg-primary fs-6 fw-normal" id="existingSelectedName"></span>
+          <button type="button" class="btn btn-sm btn-link text-danger p-0 ms-1" id="clearExistingBtn">×</button>
+        </div>
+        <input type="text" id="existingFilter" class="form-control mb-1" placeholder="Filter playlists…">
+        <ul id="existingList" class="list-group" style="max-height:200px;overflow-y:auto;">
+          {% for pl in playlists %}
+            <li class="list-group-item list-group-item-action py-1 px-2 small existing-pl-item"
+                data-id="{{ pl.id }}" data-name="{{ pl.name | e }}">{{ pl.name }}</li>
+          {% endfor %}
+        </ul>
+      </div>
     </div>
 
     <div class="mb-4">
@@ -64,6 +81,43 @@
       document.getElementById('playlistText').value = e.target.result;
     };
     reader.readAsText(file);
+  });
+
+  // Existing playlist picker
+  const filterInput    = document.getElementById('existingFilter');
+  const listEl         = document.getElementById('existingList');
+  const hiddenId       = document.getElementById('existingPlaylistId');
+  const badge          = document.getElementById('existingSelectedBadge');
+  const badgeName      = document.getElementById('existingSelectedName');
+  const clearBtn       = document.getElementById('clearExistingBtn');
+  const nameInput      = document.getElementById('playlistNameInput');
+
+  filterInput.addEventListener('input', function () {
+    const q = this.value.toLowerCase();
+    listEl.querySelectorAll('.existing-pl-item').forEach(li => {
+      li.style.display = li.dataset.name.toLowerCase().includes(q) ? '' : 'none';
+    });
+  });
+
+  listEl.addEventListener('click', function (e) {
+    const li = e.target.closest('.existing-pl-item');
+    if (!li) return;
+    hiddenId.value     = li.dataset.id;
+    badgeName.textContent = li.dataset.name;
+    badge.classList.remove('d-none');
+    listEl.classList.add('d-none');
+    filterInput.classList.add('d-none');
+    nameInput.disabled = true;
+    nameInput.closest('.col-md-5').style.opacity = '0.4';
+  });
+
+  clearBtn.addEventListener('click', function () {
+    hiddenId.value = '';
+    badge.classList.add('d-none');
+    listEl.classList.remove('d-none');
+    filterInput.classList.remove('d-none');
+    nameInput.disabled = false;
+    nameInput.closest('.col-md-5').style.opacity = '';
   });
 </script>
 {% endblock %}

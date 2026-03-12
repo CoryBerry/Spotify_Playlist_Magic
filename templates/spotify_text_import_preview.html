@@ -11,6 +11,7 @@
 
   <form method="POST" action="/spotify/text-import/build">
     <input type="hidden" name="playlist_name" value="{{ playlist_name }}">
+    <input type="hidden" name="existing_playlist_id" value="{{ existing_playlist_id or '' }}">
     <input type="hidden" name="line_count" value="{{ line_results | length }}">
 
     <table class="table table-hover align-middle">
@@ -61,9 +62,12 @@
     </table>
 
     <div class="mt-3 d-flex align-items-center gap-3">
-      <button type="submit" class="btn btn-success">Create Playlist</button>
+      <button type="submit" class="btn btn-success">{% if existing_playlist_id %}Add to Playlist{% else %}Create Playlist{% endif %}</button>
       <a href="/spotify/text-import" class="btn btn-outline-secondary">Start Over</a>
-      <span class="text-muted small">Playlist: <strong>{{ playlist_name }}</strong></span>
+      <span class="text-muted small">
+        {% if existing_playlist_id %}Adding to:{% else %}Creating:{% endif %}
+        <strong>{{ playlist_name }}</strong>
+      </span>
     </div>
   </form>
 {% endblock %}

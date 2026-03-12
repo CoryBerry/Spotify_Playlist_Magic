@@ -244,9 +244,9 @@ def get_cooldown_stats(provider):
         TrackHistory.provider == provider
     ).group_by(TrackHistory.track_id).all()
 
-    total_plays = sum(r.total_plays for r in all_time)
     multi_cycle = sum(1 for r in all_time if r.total_plays > s.cooldown_max_plays)
     thawed      = db.session.query(func.sum(ThawTally.count)).filter_by(provider=provider).scalar() or 0
+    total_ever  = len(on_ice) + thawed  # on ice now + all that have cycled through
 
     # Bucket day values: 1/7, 3/7, 6/7 of cooldown_days
     b1 = max(1, round(cd / 7))
@@ -261,7 +261,7 @@ def get_cooldown_stats(provider):
     return {
         "total":         len(on_ice),
         "thawed":        thawed,
-        "total_plays":   total_plays,
+        "total_ever":    total_ever,
         "multi_cycle":   multi_cycle,
         "buckets":       [(b1, _count_range(0, b1)), (b2, _count_range(b1, b2)), (b3, _count_range(b2, b3))],
         "cooldown_days": cd,
@@ -1213,7 +1213,9 @@ def text_import():
     sp = get_spotify_client()
     if not sp:
         return redirect(url_for("spotify_login"))
-    return render_template("spotify_text_import.html")
+    user_id = sp.me()["id"]
+    playlists, _, _ = get_cached_playlists(sp, user_id)
+    return render_template("spotify_text_import.html", playlists=playlists)
 
 
 @app.route("/spotify/text-import/preview", methods=["POST"])
@@ -1222,9 +1224,10 @@ def text_import_preview():
     if not sp:
         return redirect(url_for("spotify_login"))
 
-    raw_text      = request.form.get("playlist_text", "")
-    playlist_name = request.form.get("playlist_name", "").strip() or f"Text Import {_date_label()}"
-    mode          = request.form.get("mode", "trust")  # "trust" or "manual"
+    raw_text             = request.form.get("playlist_text", "")
+    playlist_name        = request.form.get("playlist_name", "").strip() or f"Text Import {_date_label()}"
+    mode                 = request.form.get("mode", "trust")  # "trust" or "manual"
+    existing_playlist_id = request.form.get("existing_playlist_id", "").strip()
 
     # Parse lines: skip blanks and comments
     lines = [l.strip() for l in raw_text.splitlines() if l.strip() and not l.strip().startswith("#")]
@@ -1253,7 +1256,29 @@ def text_import_preview():
                 track_uris.extend(_uris_from_match(lr["matches"][0]))
 
         if not track_uris:
-            return render_template("spotify_text_import.html", error="No tracks matched — check your input.")
+            user_id = sp.me()["id"]
+            playlists, _, _ = get_cached_playlists(sp, user_id)
+            return render_template("spotify_text_import.html", playlists=playlists,
+                                   error="No tracks matched — check your input.")
+
+        unmatched = sum(1 for lr in line_results if not lr["matches"])
+
+        if existing_playlist_id:
+            playlist_obj = sp.playlist(existing_playlist_id, fields="id,name,external_urls")
+            for i in range(0, len(track_uris), 100):
+                sp.playlist_add_items(existing_playlist_id, track_uris[i:i + 100])
+            db.session.add(CreatedPlaylist(
+                playlist_id=existing_playlist_id,
+                name=playlist_obj["name"],
+                tool="Text Import",
+                provider="spotify",
+                url=playlist_obj["external_urls"]["spotify"],
+                gen_seconds=round(time.time() - t0, 1),
+                track_count=len(track_uris)
+            ))
+            db.session.commit()
+            return render_template("spotify_done.html", playlist=playlist_obj,
+                                   track_count=len(track_uris), unmatched=unmatched)
 
         user_id      = sp.me()["id"]
         new_playlist = sp.user_playlist_create(user_id, playlist_name, public=False)
@@ -1271,14 +1296,14 @@ def text_import_preview():
         ))
         db.session.commit()
 
-        unmatched = sum(1 for lr in line_results if not lr["matches"])
         return render_template("spotify_done.html", playlist=new_playlist,
                                track_count=len(track_uris), unmatched=unmatched)
 
     # Manual mode: show preview
     return render_template("spotify_text_import_preview.html",
                            line_results=line_results,
-                           playlist_name=playlist_name)
+                           playlist_name=playlist_name,
+                           existing_playlist_id=existing_playlist_id)
 
 
 @app.route("/spotify/text-import/build", methods=["POST"])
@@ -1287,8 +1312,9 @@ def text_import_build():
     if not sp:
         return redirect(url_for("spotify_login"))
 
-    playlist_name = request.form.get("playlist_name", f"Text Import {_date_label()}")
-    line_count    = int(request.form.get("line_count", 0))
+    playlist_name        = request.form.get("playlist_name", f"Text Import {_date_label()}")
+    existing_playlist_id = request.form.get("existing_playlist_id", "").strip()
+    line_count           = int(request.form.get("line_count", 0))
     raw_uris      = [request.form.get(f"uri_{i}", "skip") for i in range(line_count)]
 
     t0         = time.time()
@@ -1307,6 +1333,23 @@ def text_import_build():
 
     if not track_uris:
         return redirect(url_for("text_import"))
+
+    if existing_playlist_id:
+        playlist_obj = sp.playlist(existing_playlist_id, fields="id,name,external_urls")
+        for i in range(0, len(track_uris), 100):
+            sp.playlist_add_items(existing_playlist_id, track_uris[i:i + 100])
+        db.session.add(CreatedPlaylist(
+            playlist_id=existing_playlist_id,
+            name=playlist_obj["name"],
+            tool="Text Import",
+            provider="spotify",
+            url=playlist_obj["external_urls"]["spotify"],
+            gen_seconds=round(time.time() - t0, 1),
+            track_count=len(track_uris)
+        ))
+        db.session.commit()
+        return render_template("spotify_done.html", playlist=playlist_obj,
+                               track_count=len(track_uris), unmatched=0)
 
     user_id      = sp.me()["id"]
     new_playlist = sp.user_playlist_create(user_id, playlist_name, public=False)
