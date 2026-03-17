@@ -43,7 +43,7 @@
           &nbsp;&middot;&nbsp; Warms up in {{ cooldown_stats.cooldown_days - cooldown_stats.buckets[1][0] }}d: {{ cooldown_stats.buckets[1][1] }}
           &nbsp;&middot;&nbsp; Warms up in {{ cooldown_stats.cooldown_days - cooldown_stats.buckets[2][0] }}d: {{ cooldown_stats.buckets[2][1] }}
           &nbsp;&middot;&nbsp; 🌊 <strong>{{ cooldown_stats.thawed }}</strong> thawed
-          &nbsp;&middot;&nbsp; 🔄 <strong>{{ cooldown_stats.total_plays }}</strong> total plays
+          &nbsp;&middot;&nbsp; 🔄 <strong>{{ cooldown_stats.total_ever }}</strong> total ever
           {% if cooldown_stats.multi_cycle > 0 %}
             &nbsp;&middot;&nbsp; <strong>{{ cooldown_stats.multi_cycle }}</strong> tracks iced 2×+
           {% endif %}

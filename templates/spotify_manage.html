@@ -21,7 +21,12 @@
         <option value="most">Most Tracks</option>
         <option value="least">Fewest Tracks</option>
         <option value="owned">Owned First</option>
+        <option value="least-used">Least Used</option>
+        <option value="oldest-use">Oldest Use (never first)</option>
       </select>
+    </div>
+    <div class="col-auto">
+      <button id="btn-never-used" class="btn btn-sm btn-outline-warning" type="button">Never Used</button>
     </div>
     <div class="col-auto">
       <span id="visibleCount" class="text-muted small"></span>
@@ -55,11 +60,14 @@
       </thead>
       <tbody id="playlistBody">
         {% for playlist in playlists %}
+          {% set u = usage_map.get(playlist.id) %}
           <tr class="playlist-row"
               data-name="{{ playlist.name | lower }}"
               data-tracks="{{ playlist.tracks.total }}"
               data-order="{{ loop.index }}"
-              data-owned="{{ '1' if playlist.owner.id == user_id else '0' }}">
+              data-owned="{{ '1' if playlist.owner.id == user_id else '0' }}"
+              data-uses="{{ u.use_count if u else 0 }}"
+              data-last-used="{{ u.last_used.timestamp() | int if u and u.last_used else 0 }}">
             <td>
               <input class="form-check-input row-check" type="checkbox"
                      name="playlist_ids" value="{{ playlist.id }}">
@@ -151,9 +159,11 @@
 
 {% block scripts %}
   <script>
-    const body        = document.getElementById("playlistBody");
-    const filterInput = document.getElementById("filterInput");
-    const sortSelect  = document.getElementById("sortSelect");
+    const body          = document.getElementById("playlistBody");
+    const filterInput   = document.getElementById("filterInput");
+    const sortSelect    = document.getElementById("sortSelect");
+    const btnNeverUsed  = document.getElementById("btn-never-used");
+    let   neverUsedMode = false;
     const deleteBtn    = document.getElementById("deleteBtn");
     const selectAllBtn = document.getElementById("selectAllBtn");
     const bulkTagInput  = document.getElementById("bulkTagInput");
@@ -180,16 +190,26 @@
     }
 
     // Filter
-    filterInput.addEventListener("input", () => {
+    function applyFilter() {
       const term = filterInput.value.toLowerCase();
       getRows().forEach(row => {
-        const hide = !row.dataset.name.includes(term);
+        const nameMatch  = row.dataset.name.includes(term);
+        const usageMatch = !neverUsedMode || parseInt(row.dataset.uses) === 0;
+        const hide = !(nameMatch && usageMatch);
         row.classList.toggle("d-none", hide);
-        // also hide its preview row
         const preview = document.getElementById("preview-" + row.querySelector(".row-check").value);
         if (preview) preview.classList.toggle("d-none", hide);
       });
       updateCounts();
+    }
+
+    filterInput.addEventListener("input", applyFilter);
+
+    btnNeverUsed.addEventListener("click", () => {
+      neverUsedMode = !neverUsedMode;
+      btnNeverUsed.classList.toggle("btn-warning", neverUsedMode);
+      btnNeverUsed.classList.toggle("btn-outline-warning", !neverUsedMode);
+      applyFilter();
     });
 
     // Restore saved sort — fire the sort logic after the handler is defined below
@@ -205,7 +225,9 @@
         if (val === "za")    return b.dataset.name.localeCompare(a.dataset.name);
         if (val === "most")  return b.dataset.tracks - a.dataset.tracks;
         if (val === "least") return a.dataset.tracks - b.dataset.tracks;
-        if (val === "owned") return b.dataset.owned - a.dataset.owned;
+        if (val === "owned")      return b.dataset.owned - a.dataset.owned;
+        if (val === "least-used") return a.dataset.uses - b.dataset.uses;
+        if (val === "oldest-use") return a.dataset.lastUsed - b.dataset.lastUsed;
         return a.dataset.order - b.dataset.order;
       });
       rows.forEach(row => {
