@@ -16,18 +16,24 @@
     <input type="hidden" name="playlist_id" value="{{ playlist_id }}">
 
     <div class="mb-3">
+      <label class="form-label fw-bold">Playlist name</label>
+      <input type="text" name="title" class="form-control" value="{{ playlist_name }}">
+      <div class="form-text">Saved as <span class="fw-bold">this : Album Samples MM/DD</span>.</div>
+    </div>
+
+    <div class="mb-3">
       <label class="form-label fw-bold">Songs per album</label>
       <input type="number" name="songs_per_album" class="form-control" value="3" min="1" max="20">
-      <div class="form-text">Random tracks pulled from each chosen album (capped at what's on the playlist).</div>
+      <div class="form-text">The first N tracks from each album, in playlist order (capped at what's on the playlist).</div>
     </div>
 
     <div class="mb-3">
       <label class="form-label fw-bold">Number of albums</label>
       <input type="number" name="num_albums" class="form-control"
-             value="{{ [album_count, 10] | min }}" min="1" max="{{ album_count }}">
-      <div class="form-text">Randomly chosen from the {{ album_count }} available. Set to {{ album_count }} for all of them.</div>
+             value="{{ album_count }}" min="1" max="{{ album_count }}">
+      <div class="form-text">Albums are used in playlist order. Lower this to only take the first N of the {{ album_count }} available.</div>
     </div>
 
-    <button type="submit" class="btn btn-success" {% if album_count == 0 %}disabled{% endif %}>🎲 Sample!</button>
+    <button type="submit" class="btn btn-success" {% if album_count == 0 %}disabled{% endif %}>🎧 Sample!</button>
   </form>
 {% endblock %}

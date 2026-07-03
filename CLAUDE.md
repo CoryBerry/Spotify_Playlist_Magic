@@ -61,7 +61,7 @@ TrackHistory      # track_id + used_at — 7-day cooldown pool to avoid replayin
 | `/spotify/album-blast` | POST — executes Album Blast build |
 | `/spotify/sampler` | Album Sampler — browse playlists |
 | `/spotify/sampler/<id>` | Config page — shows album count, set songs-per-album & #albums |
-| `/spotify/sample` | POST — pick X random songs from Y random albums on the playlist |
+| `/spotify/sample` | POST — take the first X songs from each of the first Y albums on the playlist |
 | `/spotify/manage` | Manage playlists — filter, tag, delete, toggle visibility |
 | `/spotify/tag/add` | POST JSON — add tag to playlist |
 | `/spotify/tag/remove` | POST JSON — remove tag from playlist |
@@ -95,7 +95,7 @@ TrackHistory      # track_id + used_at — 7-day cooldown pool to avoid replayin
 
 **Mood presets (`MOOD_PRESETS`):** code is present but disabled. Spotify restricted `/audio-features` for new apps in late 2024. Do not re-enable without verifying API access.
 
-**Album Sampler build:** `_group_playlist_albums()` fetches the playlist's tracks once (album id/name ride along on each track object — no per-album API calls) and buckets track URIs by `album.id`. Build then `random.sample`s Y albums, `random.sample`s X (default 3) tracks from each album's on-playlist tracks (capped at what's present), shuffles the result to interleave albums, and creates the playlist. Cheaper than Album Blast, which does an `album_tracks` call per album.
+**Album Sampler build:** `_group_playlist_albums()` fetches the playlist's tracks once (album id/name ride along on each track object — no per-album API calls) and buckets track URIs by `album.id` in playlist order. Build then takes the first N albums (playlist order, default all) and the first X (default 3) tracks of each — deterministic, no randomness, result stays in album order. Cheaper than Album Blast, which does an `album_tracks` call per album.
 
 **Plex audio filter:** only playlists with `playlistType == "audio"` and ≥ 20 tracks are shown (`PLEX_MIN_TRACKS = 20`).
 

@@ -896,25 +896,23 @@ def sample_build():
             return default
 
     songs_per  = _bounded("songs_per_album", 3, 1, 20)
-    num_albums = _bounded("num_albums", 10, 1, 500)
+    num_albums = _bounded("num_albums", 500, 1, 500)
 
     playlist_name, albums = _group_playlist_albums(sp, playlist_id)
-    album_ids  = list(albums.keys())
-    picked_ids = random.sample(album_ids, min(num_albums, len(album_ids)))
+    picked_ids = list(albums.keys())[:num_albums]  # first N albums, in playlist order
 
     track_uris  = []
     album_names = []
     for aid in picked_ids:
         album = albums[aid]
         album_names.append(album["name"])
-        uris = album["uris"]
-        track_uris.extend(random.sample(uris, min(songs_per, len(uris))))
+        track_uris.extend(album["uris"][:songs_per])  # first X tracks of the album
 
-    random.shuffle(track_uris)  # interleave albums rather than grouping them
+    title    = (request.form.get("title") or "").strip() or playlist_name
+    new_name = f"{title} : Album Samples {datetime.now().strftime('%m/%d')}"
 
     user_id      = sp.me()["id"]
-    new_playlist = sp.user_playlist_create(
-        user_id, f"Album Sampler {_now_label()}", public=False)
+    new_playlist = sp.user_playlist_create(user_id, new_name, public=False)
     for i in range(0, len(track_uris), 100):
         sp.playlist_add_items(new_playlist["id"], track_uris[i:i + 100])
 
@@ -933,7 +931,7 @@ def sample_build():
         "spotify_sampler_done.html",
         playlist=new_playlist,
         track_count=len(track_uris),
-        album_names=sorted(album_names)
+        album_names=album_names
     )
 
 
