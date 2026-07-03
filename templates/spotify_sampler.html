@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+
+{% block title %}Album Sampler{% endblock %}
+
+{% block content %}
+  <h2>Album Sampler</h2>
+  <p class="text-muted">Pick one of your album playlists, then pull a few random songs from a random handful of its albums.</p>
+
+  <div class="row align-items-center mb-2 g-3">
+    <div class="col-auto">
+      <select id="sortSelect" class="form-select" style="width: 180px;">
+        <option value="recent">Recently Added</option>
+        <option value="az">A → Z</option>
+        <option value="za">Z → A</option>
+        <option value="most">Most Tracks</option>
+        <option value="least">Fewest Tracks</option>
+      </select>
+    </div>
+    <div class="col-md-3">
+      <input type="text" id="filterInput" class="form-control" placeholder="Filter playlists...">
+    </div>
+    <div class="col-auto">
+      <span id="visibleCount" class="text-muted small"></span>
+    </div>
+  </div>
+
+  {% if all_tags %}
+  <div class="mb-3 d-flex flex-wrap gap-2 align-items-center">
+    <span class="fw-bold small me-1">Tags:</span>
+    <button type="button" class="btn btn-sm btn-secondary tag-filter-btn active" data-tag="">All</button>
+    {% for tag in all_tags %}
+      <button type="button" class="btn btn-sm btn-outline-info tag-filter-btn" data-tag="{{ tag }}">{{ tag }}</button>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <div class="list-group" id="playlistList">
+    {% for playlist in playlists %}
+      <a href="/spotify/sampler/{{ playlist.id }}"
+         class="list-group-item list-group-item-action playlist-row"
+         data-name="{{ playlist.name | lower }}"
+         data-tracks="{{ playlist.tracks.total }}"
+         data-order="{{ loop.index }}"
+         data-tags="{{ tag_map.get(playlist.id, []) | join(',') | lower }}">
+        <div class="d-flex justify-content-between align-items-start">
+          <div>
+            <span class="fw-bold">{{ playlist.name }}</span>
+            {% if playlist.owner.id != user_id %}
+              <span class="text-muted small ms-2">by {{ playlist.owner.display_name or playlist.owner.id }}</span>
+            {% endif %}
+            {% if tag_map.get(playlist.id) %}
+              <div class="mt-1 d-flex flex-wrap gap-1">
+                {% for tag in tag_map.get(playlist.id, []) %}
+                  <span class="badge bg-info text-dark">{{ tag }}</span>
+                {% endfor %}
+              </div>
+            {% endif %}
+          </div>
+          <span class="badge bg-secondary ms-3 mt-1">{{ playlist.tracks.total }} tracks</span>
+        </div>
+      </a>
+    {% endfor %}
+  </div>
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    const list   = document.getElementById("playlistList");
+    const filter = document.getElementById("filterInput");
+    const sorter = document.getElementById("sortSelect");
+    const count  = document.getElementById("visibleCount");
+    let activeTag = "";
+
+    function getRows() {
+      return [...list.querySelectorAll(".playlist-row")];
+    }
+
+    function applyFilter() {
+      const term = filter.value.toLowerCase();
+      let visible = 0;
+      getRows().forEach(row => {
+        const nameMatch = row.dataset.name.includes(term);
+        const tagMatch  = !activeTag || row.dataset.tags.split(",").includes(activeTag);
+        const show = nameMatch && tagMatch;
+        row.classList.toggle("d-none", !show);
+        if (show) visible++;
+      });
+      count.textContent = visible + " shown";
+    }
+
+    function applySort() {
+      const val  = sorter.value;
+      const rows = getRows();
+      rows.sort((a, b) => {
+        if (val === "az")    return a.dataset.name.localeCompare(b.dataset.name);
+        if (val === "za")    return b.dataset.name.localeCompare(a.dataset.name);
+        if (val === "most")  return b.dataset.tracks - a.dataset.tracks;
+        if (val === "least") return a.dataset.tracks - b.dataset.tracks;
+        return a.dataset.order - b.dataset.order;
+      });
+      rows.forEach(row => list.appendChild(row));
+      applyFilter();
+    }
+
+    const _savedSort = localStorage.getItem("sort_sampler");
+    if (_savedSort) { sorter.value = _savedSort; applySort(); }
+
+    filter.addEventListener("input", applyFilter);
+    sorter.addEventListener("change", () => { localStorage.setItem("sort_sampler", sorter.value); applySort(); });
+
+    document.querySelectorAll(".tag-filter-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".tag-filter-btn").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        activeTag = btn.dataset.tag;
+        applyFilter();
+      });
+    });
+
+    applyFilter();
+  </script>
+{% endblock %}

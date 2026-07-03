@@ -17,6 +17,7 @@
         <a class="nav-link {% if path == '/' %}active{% endif %}" href="/">Home</a>
         <a class="nav-link {% if path in ['/spotify', '/spotify/playlists', '/spotify/build'] %}active{% endif %}" href="/spotify">Block Mix</a>
         <a class="nav-link {% if path.startswith('/spotify/album-blaster') or path == '/spotify/album-blast' %}active{% endif %}" href="/spotify/album-blaster">Album Blaster</a>
+        <a class="nav-link {% if path.startswith('/spotify/sampler') or path == '/spotify/sample' %}active{% endif %}" href="/spotify/sampler">Sampler</a>
         <a class="nav-link {% if path.startswith('/spotify/text-import') %}active{% endif %}" href="/spotify/text-import">Text Import</a>
         <a class="nav-link {% if path == '/spotify/manage' %}active{% endif %}" href="/spotify/manage">Manage</a>
         {% if plex_enabled %}

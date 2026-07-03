@@ -59,6 +59,9 @@ TrackHistory      # track_id + used_at — 7-day cooldown pool to avoid replayin
 | `/spotify/album-blaster` | Album Blaster — browse playlists |
 | `/spotify/album-blaster/<id>` | Pick tracks from a playlist |
 | `/spotify/album-blast` | POST — executes Album Blast build |
+| `/spotify/sampler` | Album Sampler — browse playlists |
+| `/spotify/sampler/<id>` | Config page — shows album count, set songs-per-album & #albums |
+| `/spotify/sample` | POST — pick X random songs from Y random albums on the playlist |
 | `/spotify/manage` | Manage playlists — filter, tag, delete, toggle visibility |
 | `/spotify/tag/add` | POST JSON — add tag to playlist |
 | `/spotify/tag/remove` | POST JSON — remove tag from playlist |
@@ -91,6 +94,8 @@ TrackHistory      # track_id + used_at — 7-day cooldown pool to avoid replayin
 **7-day cooldown:** tracks used in any build are written to `TrackHistory`. New builds exclude them unless the remaining pool would be smaller than `block_size` (safety fallback keeps the build from failing).
 
 **Mood presets (`MOOD_PRESETS`):** code is present but disabled. Spotify restricted `/audio-features` for new apps in late 2024. Do not re-enable without verifying API access.
+
+**Album Sampler build:** `_group_playlist_albums()` fetches the playlist's tracks once (album id/name ride along on each track object — no per-album API calls) and buckets track URIs by `album.id`. Build then `random.sample`s Y albums, `random.sample`s X (default 3) tracks from each album's on-playlist tracks (capped at what's present), shuffles the result to interleave albums, and creates the playlist. Cheaper than Album Blast, which does an `album_tracks` call per album.
 
 **Plex audio filter:** only playlists with `playlistType == "audio"` and ≥ 20 tracks are shown (`PLEX_MIN_TRACKS = 20`).
 

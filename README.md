@@ -14,6 +14,10 @@ Select 2 or more playlists and build a new playlist where songs rotate in blocks
 
 Browse any playlist, pick tracks you like, and blast their full albums into a brand new playlist. Great for rediscovering albums you forgot you loved.
 
+### 🎲 Album Sampler
+
+Turn a big "full albums" playlist into a bite-sized sampler. Point it at a playlist, choose how many songs to pull per album (3 by default) and how many albums to include, and it grabs a random handful of songs from a random selection of the albums — then shuffles them together. Perfect for skimming a genre/decade collection without playing every album end to end. _(Spotify only)_
+
 ### 🗂️ Manage Playlists
 
 Browse all your playlists in a filterable, sortable table. Preview tracks, toggle public/private visibility, and bulk delete playlists you no longer need. Sort by least used or oldest use, and filter to playlists you've never mixed to find forgotten gems. _(Spotify only)_

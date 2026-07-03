@@ -822,6 +822,122 @@ def album_blast():
 
 
 # ---------------------------------------------------------------
+# Routes — Album Sampler (X songs from Y random albums)
+# ---------------------------------------------------------------
+
+@app.route("/spotify/sampler")
+def sampler():
+    sp = get_spotify_client()
+    if not sp:
+        return redirect(url_for("spotify_login"))
+
+    user_id = sp.me()["id"]
+    playlists, cache_updated_at, _ = get_cached_playlists(sp, user_id)
+
+    all_tags = PlaylistTag.query.filter_by(user_id="local").all()
+    tag_map  = {}
+    for t in all_tags:
+        tag_map.setdefault(t.playlist_id, []).append(t.tag)
+    all_tag_names = sorted({t.tag for t in all_tags})
+
+    return render_template("spotify_sampler.html", playlists=playlists, user_id=user_id,
+                           tag_map=tag_map, all_tags=all_tag_names,
+                           cache_updated_at=cache_updated_at,
+                           cache_refresh_url=url_for("cache_refresh") + "?next=" + request.path)
+
+
+def _group_playlist_albums(sp, playlist_id):
+    """Fetch a playlist's tracks once, grouped by album id.
+
+    Album info rides along on every track object, so this is a single pass with
+    no per-album API calls. Returns (playlist_name, {album_id: {name, uris}})."""
+    playlist = sp.playlist(playlist_id, fields="name")
+    albums   = {}
+    results  = sp.playlist_tracks(
+        playlist_id, fields="next,items(track(uri,album(id,name)))")
+    while results:
+        for item in results["items"]:
+            track = item.get("track")
+            if not track or not track.get("album") or not track["album"].get("id"):
+                continue
+            aid    = track["album"]["id"]
+            bucket = albums.setdefault(aid, {"name": track["album"]["name"], "uris": []})
+            bucket["uris"].append(track["uri"])
+        results = sp.next(results) if results["next"] else None
+    return playlist["name"], albums
+
+
+@app.route("/spotify/sampler/<playlist_id>")
+def sampler_config(playlist_id):
+    sp = get_spotify_client()
+    if not sp:
+        return redirect(url_for("spotify_login"))
+
+    playlist_name, albums = _group_playlist_albums(sp, playlist_id)
+    return render_template("spotify_sampler_config.html",
+                           playlist_id=playlist_id,
+                           playlist_name=playlist_name,
+                           album_count=len(albums))
+
+
+@app.route("/spotify/sample", methods=["POST"])
+def sample_build():
+    sp = get_spotify_client()
+    if not sp:
+        return redirect(url_for("spotify_login"))
+
+    playlist_id = request.form.get("playlist_id")
+    t0 = time.time()
+
+    def _bounded(name, default, lo, hi):
+        try:
+            return max(lo, min(hi, int(request.form.get(name, default))))
+        except (TypeError, ValueError):
+            return default
+
+    songs_per  = _bounded("songs_per_album", 3, 1, 20)
+    num_albums = _bounded("num_albums", 10, 1, 500)
+
+    playlist_name, albums = _group_playlist_albums(sp, playlist_id)
+    album_ids  = list(albums.keys())
+    picked_ids = random.sample(album_ids, min(num_albums, len(album_ids)))
+
+    track_uris  = []
+    album_names = []
+    for aid in picked_ids:
+        album = albums[aid]
+        album_names.append(album["name"])
+        uris = album["uris"]
+        track_uris.extend(random.sample(uris, min(songs_per, len(uris))))
+
+    random.shuffle(track_uris)  # interleave albums rather than grouping them
+
+    user_id      = sp.me()["id"]
+    new_playlist = sp.user_playlist_create(
+        user_id, f"Album Sampler {_now_label()}", public=False)
+    for i in range(0, len(track_uris), 100):
+        sp.playlist_add_items(new_playlist["id"], track_uris[i:i + 100])
+
+    db.session.add(CreatedPlaylist(
+        playlist_id=new_playlist["id"],
+        name=new_playlist["name"],
+        tool="Album Sampler",
+        provider="spotify",
+        url=new_playlist["external_urls"]["spotify"],
+        gen_seconds=round(time.time() - t0, 1),
+        track_count=len(track_uris)
+    ))
+    db.session.commit()
+
+    return render_template(
+        "spotify_sampler_done.html",
+        playlist=new_playlist,
+        track_count=len(track_uris),
+        album_names=sorted(album_names)
+    )
+
+
+# ---------------------------------------------------------------
 # Routes — Tagging
 # ---------------------------------------------------------------
 
