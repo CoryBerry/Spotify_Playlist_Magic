@@ -78,6 +78,9 @@
                   {% endif %}
                   {% if rec.provider == "spotify" %}
                     <a href="/spotify/stats/{{ rec.playlist_id }}" class="btn btn-outline-secondary btn-sm ms-2">Stats</a>
+                    {% if rec.tool == "Block Mix" %}
+                      <a href="/spotify/playlists?remake_id={{ rec.id }}" class="btn btn-outline-success btn-sm ms-1">Remake</a>
+                    {% endif %}
                   {% elif rec.provider == "plex" %}
                     <a href="/plex/stats/{{ rec.playlist_id }}" class="btn btn-outline-info btn-sm ms-2">Stats</a>
                   {% endif %}

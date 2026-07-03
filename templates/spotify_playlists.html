@@ -375,6 +375,43 @@
     updateCount();
     updateTrackCount();
 
+    {% if remake_config %}
+    // Pre-select playlists and settings from a prior build
+    (function() {
+      const cfg = {{ remake_config | tojson }};
+      document.getElementById("blockSize").value = cfg.block_size;
+      document.getElementById("repeats").value   = cfg.repeats;
+
+      cfg.sources.forEach(src => {
+        const cb = document.querySelector(`.playlist-check[value="${src.id}"]`);
+        if (!cb) return;
+        cb.checked = true;
+        const card = cb.closest(".playlist-card");
+        card.querySelector(".playlist-controls").style.display = "";
+        const ws = card.querySelector(".weight-select");
+        if (ws) ws.value = String(src.weight);
+      });
+
+      if (cfg.pinned_id) {
+        const pin = document.querySelector(`.pin-radio[value="${cfg.pinned_id}"]`);
+        if (pin) {
+          pin.checked = true;
+          pin.dataset.wasChecked = "true";
+          const pinCard = pin.closest(".playlist-card");
+          const pinCb = pinCard.querySelector(".playlist-check");
+          if (pinCb && !pinCb.checked) {
+            pinCb.checked = true;
+            pinCard.querySelector(".playlist-controls").style.display = "";
+          }
+        }
+        document.getElementById("pinInterval").value = cfg.pin_interval;
+        updatePinInterval();
+      }
+
+      updateTrackCount();
+    })();
+    {% endif %}
+
     // Build loading overlay — guard flag prevents double-submit
     let building = false;
     document.querySelector("form").addEventListener("submit", e => {

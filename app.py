@@ -136,17 +136,21 @@ class PlaylistCache(db.Model):
 
 
 class CreatedPlaylist(db.Model):
-    id          = db.Column(db.Integer, primary_key=True)
-    playlist_id = db.Column(db.String(100), nullable=False)
-    name        = db.Column(db.String(200), nullable=False)
-    tool        = db.Column(db.String(50),  nullable=False)   # "Block Mix" or "Album Blast"
-    provider    = db.Column(db.String(20),  nullable=False)   # "spotify" or "plex"
-    url         = db.Column(db.String(500), nullable=True)
-    created_at  = db.Column(db.DateTime,   default=datetime.now)
-    alive       = db.Column(db.Boolean,    default=True)
-    checked_at  = db.Column(db.DateTime,   nullable=True)
-    gen_seconds = db.Column(db.Float,      nullable=True)
-    track_count = db.Column(db.Integer,    nullable=True)
+    id                  = db.Column(db.Integer, primary_key=True)
+    playlist_id         = db.Column(db.String(100), nullable=False)
+    name                = db.Column(db.String(200), nullable=False)
+    tool                = db.Column(db.String(50),  nullable=False)   # "Block Mix" or "Album Blast"
+    provider            = db.Column(db.String(20),  nullable=False)   # "spotify" or "plex"
+    url                 = db.Column(db.String(500), nullable=True)
+    created_at          = db.Column(db.DateTime,   default=datetime.now)
+    alive               = db.Column(db.Boolean,    default=True)
+    checked_at          = db.Column(db.DateTime,   nullable=True)
+    gen_seconds         = db.Column(db.Float,      nullable=True)
+    track_count         = db.Column(db.Integer,    nullable=True)
+    block_size          = db.Column(db.Integer,    nullable=True)
+    repeats             = db.Column(db.Integer,    nullable=True)
+    pin_interval        = db.Column(db.Integer,    nullable=True)
+    pinned_playlist_id  = db.Column(db.String(100), nullable=True)
 
 
 class PlaylistUsage(db.Model):
@@ -174,6 +178,7 @@ class BuildSource(db.Model):
     playlist_name       = db.Column(db.String(200), nullable=False)
     owner_id            = db.Column(db.String(100), nullable=True)   # Spotify owner ID; None for pre-migration rows
     position            = db.Column(db.Integer,     nullable=False)  # 0-indexed order in cycle
+    weight              = db.Column(db.Float,        nullable=True)   # raw weight value (0.5, 1, 2, 3); None for pre-migration rows
 
 
 class ThawTally(db.Model):
@@ -194,6 +199,21 @@ class AppSettings(db.Model):
 
 with app.app_context():
     db.create_all()
+    # Add columns that didn't exist in earlier schema versions
+    _new_cols = [
+        ("created_playlist", "block_size",         "INTEGER"),
+        ("created_playlist", "repeats",             "INTEGER"),
+        ("created_playlist", "pin_interval",        "INTEGER"),
+        ("created_playlist", "pinned_playlist_id",  "VARCHAR(100)"),
+        ("build_source",     "weight",              "REAL"),
+    ]
+    with db.engine.connect() as _conn:
+        for _tbl, _col, _typ in _new_cols:
+            try:
+                _conn.execute(db.text(f"ALTER TABLE {_tbl} ADD COLUMN {_col} {_typ}"))
+                _conn.commit()
+            except Exception:
+                pass  # column already exists
 
 
 def _record_usage(playlist_ids, provider):
@@ -506,11 +526,33 @@ def spotify_playlists():
     usage_records    = PlaylistUsage.query.filter_by(provider="spotify").all()
     usage_map_count  = {r.playlist_id: r.use_count for r in usage_records}
 
+    remake_config = None
+    remake_id = request.args.get("remake_id", type=int)
+    if remake_id:
+        cp = CreatedPlaylist.query.get(remake_id)
+        if cp and cp.tool == "Block Mix" and cp.provider == "spotify":
+            sources = (BuildSource.query
+                       .filter_by(created_playlist_id=cp.id)
+                       .order_by(BuildSource.position)
+                       .all())
+            pinned = cp.pinned_playlist_id or ""
+            remake_config = {
+                "block_size":  cp.block_size  or 4,
+                "repeats":     cp.repeats     or 1,
+                "pin_interval": cp.pin_interval or 1,
+                "pinned_id":   pinned,
+                "sources": [
+                    {"id": s.playlist_id, "weight": s.weight or 1}
+                    for s in sources
+                ],
+            }
+
     return render_template("spotify_playlists.html", playlists=playlists, tag_map=tag_map,
                            all_tags=all_tag_names, user_id=user_id,
                            cache_updated_at=cache_updated_at,
                            cache_refresh_url=url_for("cache_refresh") + "?next=" + request.path,
-                           usage_map_count=usage_map_count)
+                           usage_map_count=usage_map_count,
+                           remake_config=remake_config)
 
 
 @app.route("/spotify/build", methods=["POST"])
@@ -641,7 +683,11 @@ def spotify_build():
         provider="spotify",
         url=new_playlist["external_urls"]["spotify"],
         gen_seconds=round(time.time() - t0, 1),
-        track_count=len(track_uris)
+        track_count=len(track_uris),
+        block_size=block_size,
+        repeats=repeats,
+        pin_interval=pin_interval,
+        pinned_playlist_id=pinned_id or None,
     )
     db.session.add(cp)
     db.session.flush()  # get cp.id
@@ -658,7 +704,8 @@ def spotify_build():
             playlist_id=pid,
             playlist_name=playlist_names.get(pid, pid),
             owner_id=playlist_owners.get(pid) or None,
-            position=pos
+            position=pos,
+            weight=weights.get(pid, 1),
         ))
     db.session.commit()
 
@@ -1382,7 +1429,6 @@ def text_import_build():
 def recently_created():
     sp   = get_spotify_client()
     plex = get_plex()
-    now  = datetime.now()
 
     thawed = 0
     if sp:
@@ -1393,29 +1439,6 @@ def recently_created():
         flash(f"🌊 {thawed} track{'s' if thawed != 1 else ''} thawed from cooldown", "info")
 
     records = CreatedPlaylist.query.order_by(CreatedPlaylist.created_at.desc()).all()
-
-    # Verify playlists not checked recently — skip if we can't reach that provider
-    changed = False
-    for rec in records:
-        if not rec.alive:
-            continue
-        if rec.checked_at and (now - rec.checked_at) < VERIFY_TTL:
-            continue
-        try:
-            if rec.provider == "spotify" and sp:
-                sp.playlist(rec.playlist_id, fields="id")
-            elif rec.provider == "plex" and plex:
-                plex.fetchItem(int(rec.playlist_id))
-            else:
-                continue  # can't reach provider right now, leave as-is
-            rec.alive = True
-        except Exception:
-            rec.alive = False
-        rec.checked_at = now
-        changed = True
-
-    if changed:
-        db.session.commit()
 
     cooldown_stats = get_cooldown_stats("spotify") if sp else None
     return render_template("recently_created.html", records=records, cooldown_stats=cooldown_stats)
