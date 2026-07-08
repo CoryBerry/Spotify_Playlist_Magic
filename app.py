@@ -935,6 +935,95 @@ def sample_build():
     )
 
 
+@app.route("/spotify/album-sampler-blocks", methods=["POST"])
+def album_sampler_blocks():
+    """Sampler across multiple selected playlists (Block Mix grid, sampler output).
+    Per playlist: pick N random albums, X random songs each, applying the 7-day
+    cooldown. Concatenate, dedupe preserving order, create one playlist."""
+    sp = get_spotify_client()
+    if not sp:
+        return redirect(url_for("spotify_login"))
+
+    selected_ids = request.form.getlist("playlist_ids")
+    if len(selected_ids) < 2:
+        return redirect(url_for("spotify_playlists"))
+
+    def _bounded(name, default, lo, hi):
+        try:
+            return max(lo, min(hi, int(request.form.get(name, default))))
+        except (TypeError, ValueError):
+            return default
+
+    albums_per = _bounded("albums_per_playlist", 3, 1, 20)
+    songs_per  = _bounded("songs_per_album", 3, 1, 20)
+    t0 = time.time()
+
+    # 7-day cooldown set — same query and URI-based comparison Block Mix uses
+    from sqlalchemy import func as _func
+    settings    = get_settings()
+    cutoff      = datetime.now() - timedelta(days=settings.cooldown_days)
+    raw         = db.session.query(
+        TrackHistory.track_id,
+        _func.count(TrackHistory.id).label("n")
+    ).filter(
+        TrackHistory.provider == "spotify",
+        TrackHistory.used_at  >= cutoff
+    ).group_by(TrackHistory.track_id).all()
+    on_cooldown = {r.track_id for r in raw if r.n >= settings.cooldown_max_plays}
+
+    track_uris  = []
+    album_names = []
+    for playlist_id in selected_ids:
+        _, albums = _group_playlist_albums(sp, playlist_id)
+        album_ids = list(albums.keys())
+        picked    = random.sample(album_ids, min(albums_per, len(album_ids)))
+        for aid in picked:
+            uris  = albums[aid]["uris"]
+            fresh = [u for u in uris if u not in on_cooldown]
+            pool  = fresh if len(fresh) >= songs_per else uris  # fall back if too few remain
+            track_uris.extend(random.sample(pool, min(songs_per, len(pool))))
+            album_names.append(albums[aid]["name"])
+
+    # Dedupe preserving order — a track may live on more than one selected playlist
+    seen       = set()
+    track_uris = [u for u in track_uris if not (u in seen or seen.add(u))]
+
+    prefix = request.form.get("playlist_prefix", "").strip()
+    if prefix:
+        base = f"{prefix} : Album Sampler"
+    else:
+        base = f"{datetime.now().strftime('%A')} {_period_of_day()} : Album Sampler"
+    playlist_name = f"{base} : {_date_label()}"
+
+    user_id      = sp.me()["id"]
+    new_playlist = sp.user_playlist_create(user_id, playlist_name, public=False)
+    for i in range(0, len(track_uris), 100):
+        sp.playlist_add_items(new_playlist["id"], track_uris[i:i + 100])
+
+    db.session.add(CreatedPlaylist(
+        playlist_id=new_playlist["id"],
+        name=new_playlist["name"],
+        tool="Album Sampler",
+        provider="spotify",
+        url=new_playlist["external_urls"]["spotify"],
+        gen_seconds=round(time.time() - t0, 1),
+        track_count=len(track_uris)
+    ))
+    db.session.commit()
+
+    _record_usage(selected_ids, "spotify")
+    for uri in track_uris:
+        db.session.add(TrackHistory(track_id=uri, provider="spotify"))
+    db.session.commit()
+
+    return render_template(
+        "spotify_sampler_done.html",
+        playlist=new_playlist,
+        track_count=len(track_uris),
+        album_names=album_names
+    )
+
+
 # ---------------------------------------------------------------
 # Routes — Tagging
 # ---------------------------------------------------------------

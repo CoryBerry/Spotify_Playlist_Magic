@@ -100,6 +100,19 @@
               <div class="text-muted small" id="timeEstimate"></div>
             </div>
             <button type="submit" id="buildBtn" class="btn btn-success">Build Playlist</button>
+            <div class="vr mx-1"></div>
+            <div class="d-flex align-items-end gap-2"
+                 title="Album Sampler: from each selected playlist, pull a few random songs from a few random albums (with 7-day cooldown). Weights, pins, block size and repeats are ignored in this mode.">
+              <div>
+                <label class="form-label fw-bold mb-1 small text-muted">Albums/pl</label>
+                <input type="number" name="albums_per_playlist" class="form-control form-control-sm" value="3" min="1" max="20" style="width:64px;">
+              </div>
+              <div>
+                <label class="form-label fw-bold mb-1 small text-muted">Songs/alb</label>
+                <input type="number" name="songs_per_album" class="form-control form-control-sm" value="3" min="1" max="20" style="width:64px;">
+              </div>
+              <button type="submit" formaction="/spotify/album-sampler-blocks" class="btn btn-outline-success">Build Album Sampler</button>
+            </div>
           </div>
         </div>
       </div>
