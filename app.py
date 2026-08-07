@@ -22,47 +22,9 @@ except ImportError:
 
 load_dotenv()
 
-def _name_sim(query, result):
-    """Word-overlap similarity between a query title and a Spotify result name."""
-    q = set(query.lower().split())
-    r = set(result.lower().split())
-    return len(q & r) / len(q) if q else 0.0
-
-
-def _search_line(sp, line):
-    """Search Spotify for a line, returning up to 4 scored candidates sorted by name similarity."""
-    parts  = line.split(" - ", 1)
-    artist = parts[0].strip() if len(parts) == 2 else ""
-    title  = parts[1].strip() if len(parts) == 2 else line.strip()
-    q      = (f"artist:{artist} " if artist else "") + title
-
-    candidates = []
-    try:
-        for t in (sp.search(q=q, type="track", limit=5).get("tracks") or {}).get("items") or []:
-            if t:
-                candidates.append({
-                    "uri":    t["uri"],
-                    "type":   "track",
-                    "name":   t["name"],
-                    "artist": t["artists"][0]["name"] if t.get("artists") else "",
-                    "score":  _name_sim(title, t["name"]),
-                })
-    except Exception:
-        pass
-    try:
-        for a in (sp.search(q=q, type="album", limit=3).get("albums") or {}).get("items") or []:
-            if a:
-                candidates.append({
-                    "uri":    a["uri"],
-                    "type":   "album",
-                    "name":   a["name"],
-                    "artist": a["artists"][0]["name"] if a.get("artists") else "",
-                    "score":  _name_sim(title, a["name"]),
-                })
-    except Exception:
-        pass
-    candidates.sort(key=lambda x: -x["score"])
-    return candidates[:4]
+# Search/matching helpers now live in spotify_service (shared with the headless CLI) so
+# there is one source of truth. Imported back here for the web routes that use them.
+from spotify_service import _name_sim, _search_line
 
 
 def _detect_list_type(line_results):
@@ -1083,23 +1045,6 @@ def spotify_manage():
                            cache_refresh_url=url_for("cache_refresh") + "?next=" + request.path)
 
 
-@app.route("/spotify/preview/<playlist_id>")
-def spotify_preview(playlist_id):
-    sp = get_spotify_client()
-    if not sp:
-        return {"error": "not authenticated"}, 401
-
-    results = sp.playlist_tracks(playlist_id, fields="items(track(name,artists(name)))", limit=5)
-    tracks  = []
-    for item in results["items"][:5]:
-        if item["track"]:
-            track  = item["track"]
-            artist = track["artists"][0]["name"] if track["artists"] else "Unknown"
-            tracks.append(f"{track['name']} — {artist}")
-
-    return {"tracks": tracks}
-
-
 @app.route("/spotify/toggle-visibility/<playlist_id>", methods=["POST"])
 def spotify_toggle_visibility(playlist_id):
     sp = get_spotify_client()
@@ -1754,5 +1699,5 @@ def settings_thaw_all():
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, host="0.0.0.0")
 

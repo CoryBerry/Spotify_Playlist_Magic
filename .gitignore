@@ -3,6 +3,7 @@ __pycache__/
 .env
 instance/
 .cache
+.track_cache.json
 IDEAS.md
 TODO.md
 scratch/

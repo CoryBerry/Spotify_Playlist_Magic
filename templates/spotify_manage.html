@@ -108,8 +108,6 @@
               {% endif %}
             </td>
             <td class="d-flex gap-1">
-              <button type="button" class="btn btn-outline-secondary btn-sm preview-btn"
-                      data-id="{{ playlist.id }}">Preview</button>
               <a href="/spotify/stats/{{ playlist.id }}" class="btn btn-outline-secondary btn-sm">Stats</a>
               {% if playlist.owner.id == user_id %}
                 <form method="POST" action="/spotify/toggle-visibility/{{ playlist.id }}">
@@ -118,12 +116,6 @@
                   </button>
                 </form>
               {% endif %}
-            </td>
-          </tr>
-          <!-- Preview row — hidden until loaded -->
-          <tr class="preview-row d-none" id="preview-{{ playlist.id }}">
-            <td colspan="7" class="ps-4 text-muted small bg-light">
-              <span class="preview-content">Loading...</span>
             </td>
           </tr>
         {% endfor %}
@@ -197,9 +189,7 @@
         const usageMatch = !neverUsedMode || parseInt(row.dataset.uses) === 0;
         const hide = !(nameMatch && usageMatch);
         row.classList.toggle("d-none", hide);
-        const preview = document.getElementById("preview-" + row.querySelector(".row-check").value);
-        if (preview) preview.classList.toggle("d-none", hide);
-      });
+  });
       updateCounts();
     }
 
@@ -231,9 +221,7 @@
         return a.dataset.order - b.dataset.order;
       });
       rows.forEach(row => {
-        const preview = document.getElementById("preview-" + row.querySelector(".row-check").value);
         body.appendChild(row);
-        if (preview) body.appendChild(preview);
       });
       updateCounts();
     });
@@ -250,47 +238,6 @@
       visibleRows.forEach(r => r.querySelector(".row-check").checked = !allChecked);
       selectAllBtn.textContent = allChecked ? "Select All Visible" : "Deselect All";
       updateCounts();
-    });
-
-    // Lazy preview load
-    body.addEventListener("click", e => {
-      const btn = e.target.closest(".preview-btn");
-      if (!btn) return;
-
-      const id      = btn.dataset.id;
-      const previewRow = document.getElementById("preview-" + id);
-      const content    = previewRow.querySelector(".preview-content");
-
-      // Toggle if already loaded
-      if (!previewRow.classList.contains("d-none")) {
-        previewRow.classList.add("d-none");
-        btn.textContent = "Preview";
-        return;
-      }
-
-      previewRow.classList.remove("d-none");
-      btn.textContent = "Hide";
-
-      // Only fetch if not already loaded
-      if (content.dataset.loaded) return;
-
-      fetch("/spotify/preview/" + id)
-        .then(r => r.json())
-        .then(data => {
-          content.innerHTML = "";
-          if (data.tracks.length) {
-            data.tracks.forEach(t => {
-              const div = document.createElement("div");
-              div.textContent = "• " + t;  // textContent never executes scripts
-              content.appendChild(div);
-            });
-          } else {
-            const em = document.createElement("em");
-            em.textContent = "No tracks found";
-            content.appendChild(em);
-          }
-          content.dataset.loaded = "1";
-        });
     });
 
     // Delete button → show modal
