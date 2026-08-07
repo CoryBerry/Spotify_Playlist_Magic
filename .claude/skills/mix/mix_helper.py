@@ -25,6 +25,7 @@ Examples:
 import argparse
 import json
 import os
+import random
 import sqlite3
 import sys
 from datetime import datetime, timedelta
@@ -86,7 +87,7 @@ def _cooldown_days():
 def _resolve(source, by_id, by_name):
     """Resolve a source token (exact id, else case-insensitive name substring)."""
     if source in by_id:
-        return source, by_id[source]
+        return by_id[source], source  # (name, id) — match the name-branch order
     hits = [(n, i) for n, i in by_name.items() if source.lower() in n.lower()]
     if not hits:
         sys.exit(f"No playlist matches {source!r}.")
@@ -110,6 +111,68 @@ def _fetch_tracks(sp, pid):
                 out.append((t["uri"], t["name"], ", ".join(a["name"] for a in t["artists"])))
         res = sp.next(res) if res.get("next") else None
     return out
+
+
+def _fetch_tracks_rich(sp, pid):
+    """Like _fetch_tracks but also carries album + popularity for band selection.
+
+    playlist_items returns full track objects, so popularity and album ride along
+    with no extra API calls.
+    """
+    out = []
+    res = sp.playlist_items(pid, additional_types=["track"], limit=100)
+    while res:
+        for it in res["items"]:
+            t = it.get("track")
+            if t and t.get("id"):
+                alb = t.get("album") or {}
+                out.append({
+                    "uri": t["uri"],
+                    "name": t["name"],
+                    "artist": ", ".join(a["name"] for a in t["artists"]),
+                    "album_id": alb.get("id") or "single",
+                    "album": alb.get("name") or "",
+                    "pop": t.get("popularity", 0) or 0,
+                })
+        res = sp.next(res) if res.get("next") else None
+    return out
+
+
+def _parse_ts(s):
+    """track_history.used_at is stored as 'YYYY-MM-DD HH:MM:SS[.ffffff]'."""
+    try:
+        return datetime.fromisoformat(s)
+    except ValueError:
+        return datetime.strptime(s.split(".")[0], "%Y-%m-%d %H:%M:%S")
+
+
+def _last_used_map():
+    """uri -> most-recent used_at datetime, across all Spotify track_history rows."""
+    latest = {}
+    for uri, used in _db().execute(
+        "SELECT track_id, used_at FROM track_history WHERE provider='spotify'"
+    ):
+        cur = latest.get(uri)
+        if cur is None or used > cur:
+            latest[uri] = used
+    return {u: _parse_ts(s) for u, s in latest.items()}
+
+
+def _band_select(album_tracks, skip_top, per_album, top_mode):
+    """Pick tracks from one album's list (already sorted by popularity, desc).
+
+    Default (band): skip the top `skip_top` hits, then take `per_album` — Cory's
+    "3rd-5th of 10" sweet spot (album favorites that aren't the obvious single).
+    `--top`: just take the highest-popularity `per_album` (the bangers / most-played).
+    Short albums/EPs shrink the skip so something always comes through.
+    """
+    n = len(album_tracks)
+    if top_mode:
+        return album_tracks[:per_album]
+    if n <= per_album:
+        return album_tracks[:]
+    skip = max(0, min(skip_top, n - per_album))
+    return album_tracks[skip:skip + per_album]
 
 
 # ---------------------------------------------------------------- commands
@@ -176,6 +239,82 @@ def cmd_tracks(args):
             print(f"{uri}\t{tname}\t{artist}")
     if args.exclude_cooldown:
         print(f"# excluded {len(frozen)} tracks in cooldown", file=sys.stderr)
+
+
+def cmd_roster(args):
+    """Compact deep-cut candidate pool: per-album band selection, cooldown-aware.
+
+    This is the curation aid — instead of dumping every track, it surfaces a
+    bigger *roster* of the good-but-not-obvious cuts (default) so a mix has
+    surprise, or the bangers (`--top`) for albums you want to lead with hits.
+    """
+    pls = _cached_playlists()
+    by_id = {p["id"]: p["name"] for p in pls}
+    by_name = {p["name"]: p["id"] for p in pls}
+    sp = _client()
+
+    cooldown_days = _cooldown_days()
+    last_used = _last_used_map()
+    now = datetime.now()
+
+    def ice_of(uri):
+        """(label, frozen, days) — days since last play, or None if never played."""
+        lu = last_used.get(uri)
+        if lu is None:
+            return "·", False, None
+        days = (now - lu).days
+        if days < cooldown_days:
+            return f"❄{days}d", True, days
+        return f"~{days}d", False, days
+
+    seen = set()
+    rows = []
+    for src in args.sources:
+        name, pid = _resolve(src, by_id, by_name)
+        # bucket this source's tracks by album, in first-seen order
+        albums, order = {}, []
+        for t in _fetch_tracks_rich(sp, pid):
+            if t["album_id"] not in albums:
+                albums[t["album_id"]] = []
+                order.append(t["album_id"])
+            albums[t["album_id"]].append(t)
+        for aid in order:
+            ranked = sorted(albums[aid], key=lambda t: -t["pop"])
+            for t in _band_select(ranked, args.skip_top, args.per_album, args.top):
+                if t["uri"] in seen:
+                    continue
+                label, frozen, days = ice_of(t["uri"])
+                # --fresh: drop anything still on ice. --thawed: only played-but-thawed.
+                if args.fresh and frozen:
+                    continue
+                if args.thawed and (days is None or frozen):
+                    continue
+                seen.add(t["uri"])
+                t = dict(t, ice=label, frozen=frozen, days=days, source=name)
+                rows.append(t)
+
+    # optional per-artist cap to stop one artist clumping the roster
+    if args.per_artist:
+        capped, counts = [], {}
+        for t in sorted(rows, key=lambda r: -r["pop"]):  # keep each artist's stronger cuts
+            key = t["artist"].lower()
+            if counts.get(key, 0) >= args.per_artist:
+                continue
+            counts[key] = counts.get(key, 0) + 1
+            capped.append(t)
+        rows = capped
+
+    if args.sample and len(rows) > args.sample:
+        rng = random.Random(args.seed)
+        rows = rng.sample(rows, args.sample)
+
+    if args.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+        return
+    for t in rows:
+        print(f"{t['pop']:>3}  {t['ice']:>5}  {t['uri']}  {t['name']} — {t['artist']}  ({t['album']})")
+    print(f"# {len(rows)} candidates from {len(args.sources)} source(s); "
+          f"mode={'top' if args.top else 'band'}, cooldown={cooldown_days}d", file=sys.stderr)
 
 
 def cmd_create(args):
@@ -293,6 +432,23 @@ def main():
     t.add_argument("--exclude-cooldown", action="store_true",
                    help="drop tracks still inside the app's cooldown window")
     t.set_defaults(func=cmd_tracks)
+
+    ro = sub.add_parser("roster", help="deep-cut candidate pool (band select, cooldown-aware)")
+    ro.add_argument("sources", nargs="+", help="playlist names (substring) or ids")
+    ro.add_argument("--top", action="store_true",
+                    help="take each album's HIGHEST-popularity tracks (bangers) instead of the deep-cut band")
+    ro.add_argument("--per-album", type=int, default=3, help="tracks to take per album (default 3)")
+    ro.add_argument("--skip-top", type=int, default=2,
+                    help="band mode: skip this many top hits before selecting (default 2)")
+    ro.add_argument("--per-artist", type=int, default=0,
+                    help="cap tracks per artist across the roster (0 = no cap)")
+    ro.add_argument("--fresh", action="store_true", help="drop tracks still on ice (within cooldown)")
+    ro.add_argument("--thawed", action="store_true",
+                    help="only tracks you've played before but are now off ice (throwbacks)")
+    ro.add_argument("--sample", type=int, default=0, help="randomly keep N of the candidates (0 = all)")
+    ro.add_argument("--seed", type=int, default=None, help="seed for --sample (reproducible)")
+    ro.add_argument("--json", action="store_true")
+    ro.set_defaults(func=cmd_roster)
 
     c = sub.add_parser("create", help="create a private playlist from URIs")
     c.add_argument("--name", required=True)
