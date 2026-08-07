@@ -1083,23 +1083,6 @@ def spotify_manage():
                            cache_refresh_url=url_for("cache_refresh") + "?next=" + request.path)
 
 
-@app.route("/spotify/preview/<playlist_id>")
-def spotify_preview(playlist_id):
-    sp = get_spotify_client()
-    if not sp:
-        return {"error": "not authenticated"}, 401
-
-    results = sp.playlist_tracks(playlist_id, fields="items(track(name,artists(name)))", limit=5)
-    tracks  = []
-    for item in results["items"][:5]:
-        if item["track"]:
-            track  = item["track"]
-            artist = track["artists"][0]["name"] if track["artists"] else "Unknown"
-            tracks.append(f"{track['name']} — {artist}")
-
-    return {"tracks": tracks}
-
-
 @app.route("/spotify/toggle-visibility/<playlist_id>", methods=["POST"])
 def spotify_toggle_visibility(playlist_id):
     sp = get_spotify_client()
@@ -1754,5 +1737,5 @@ def settings_thaw_all():
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, host="0.0.0.0")
 

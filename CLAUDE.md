@@ -73,7 +73,6 @@ TrackHistory      # track_id + used_at — 7-day cooldown pool to avoid replayin
 | `/spotify/text-import/preview` | POST — parse text, search Spotify, Trust It or show manual review |
 | `/spotify/text-import/build` | POST — create playlist from manual-select form |
 | `/spotify/stats/<id>` | Track count, runtime, top artists, usage count |
-| `/spotify/preview/<id>` | GET JSON — lazy-load first 5 tracks (tooltip) |
 | `/spotify/cache/refresh` | Force invalidate playlist cache |
 | `/recently-created` | History of created playlists with alive/deleted status |
 | `/recently-created/remove/<id>` | POST — delete from provider + remove from history |
