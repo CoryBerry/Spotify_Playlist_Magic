@@ -22,47 +22,9 @@ except ImportError:
 
 load_dotenv()
 
-def _name_sim(query, result):
-    """Word-overlap similarity between a query title and a Spotify result name."""
-    q = set(query.lower().split())
-    r = set(result.lower().split())
-    return len(q & r) / len(q) if q else 0.0
-
-
-def _search_line(sp, line):
-    """Search Spotify for a line, returning up to 4 scored candidates sorted by name similarity."""
-    parts  = line.split(" - ", 1)
-    artist = parts[0].strip() if len(parts) == 2 else ""
-    title  = parts[1].strip() if len(parts) == 2 else line.strip()
-    q      = (f"artist:{artist} " if artist else "") + title
-
-    candidates = []
-    try:
-        for t in (sp.search(q=q, type="track", limit=5).get("tracks") or {}).get("items") or []:
-            if t:
-                candidates.append({
-                    "uri":    t["uri"],
-                    "type":   "track",
-                    "name":   t["name"],
-                    "artist": t["artists"][0]["name"] if t.get("artists") else "",
-                    "score":  _name_sim(title, t["name"]),
-                })
-    except Exception:
-        pass
-    try:
-        for a in (sp.search(q=q, type="album", limit=3).get("albums") or {}).get("items") or []:
-            if a:
-                candidates.append({
-                    "uri":    a["uri"],
-                    "type":   "album",
-                    "name":   a["name"],
-                    "artist": a["artists"][0]["name"] if a.get("artists") else "",
-                    "score":  _name_sim(title, a["name"]),
-                })
-    except Exception:
-        pass
-    candidates.sort(key=lambda x: -x["score"])
-    return candidates[:4]
+# Search/matching helpers now live in spotify_service (shared with the headless CLI) so
+# there is one source of truth. Imported back here for the web routes that use them.
+from spotify_service import _name_sim, _search_line
 
 
 def _detect_list_type(line_results):
