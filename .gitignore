@@ -4,6 +4,7 @@ __pycache__/
 instance/
 .cache
 .track_cache.json
+.lastfm_cache.json
 IDEAS.md
 TODO.md
 scratch/

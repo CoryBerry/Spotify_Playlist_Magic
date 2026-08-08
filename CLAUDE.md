@@ -46,6 +46,7 @@ PlaylistCache     # 1-hour cache of Spotify playlist list (falls back to stale o
 CreatedPlaylist   # history of every Block Mix / Album Blast created (alive/checked_at, gen_seconds, track_count)
 PlaylistUsage     # use_count + last_used per playlist+provider — drives "most used" sort
 TrackHistory      # track_id + used_at — 7-day cooldown pool to avoid replaying recent tracks
+TrackIce          # manual never-list / timed freeze (thaw_at NULL=never); HARD exclusion honored by every build + the mix skill
 ```
 
 ---
@@ -92,6 +93,8 @@ TrackHistory      # track_id + used_at — 7-day cooldown pool to avoid replayin
 **Block Mix build order:** fetch all tracks → apply 7-day cooldown (`TrackHistory`) → build weighted cycle (`cycle.extend([pid] * weight)`) → shuffle → iterate repeats → sample blocks → insert pinned blocks every N → dedupe preserving order → prepend cover art tracks → create playlist in batches of 100.
 
 **7-day cooldown:** tracks used in any build are written to `TrackHistory`. New builds exclude them unless the remaining pool would be smaller than `block_size` (safety fallback keeps the build from failing).
+
+**Ice box (`TrackIce` + `iced_ids(provider)`):** a manual, long-lived exclusion — never-list (`thaw_at` NULL) or timed freeze (`thaw_at` in the future). Unlike cooldown, it's a **hard** exclusion: `iced_ids()` is filtered from the pool *before* the cooldown fallback (so an iced track never returns on a small pool) and applied as a final filter on the deterministic tools (Album Blast, Text Import) too. Timed ice is released by `auto_thaw()` alongside cooldown and folded into the same `ThawTally`. Curated primarily from the `mix` skill (`mix_helper.py ice add/list/thaw`), which reads/writes the same table. Web UI is pending (issue #7).
 
 **Mood presets (`MOOD_PRESETS`):** code is present but disabled. Spotify restricted `/audio-features` for new apps in late 2024. Do not re-enable without verifying API access.
 
