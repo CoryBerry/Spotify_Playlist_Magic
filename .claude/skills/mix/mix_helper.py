@@ -40,6 +40,10 @@ from spotipy.oauth2 import SpotifyOAuth
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 DB_PATH = os.path.join(REPO_ROOT, "instance", "spotify_tools.db")
 CACHE_PATH = os.path.join(REPO_ROOT, ".cache")
+# Disk cache of per-playlist track pulls, keyed by Spotify's snapshot_id so an
+# unchanged source is served with zero playlist_items calls (issue #3). One JSON
+# file per playlist; created lazily; git-ignored. See _fetch_tracks_rich_cached.
+MIX_CACHE_DIR = os.path.join(REPO_ROOT, ".mix_cache")
 SCOPE = "playlist-read-private playlist-modify-private playlist-modify-public"
 
 
@@ -153,24 +157,13 @@ def _resolve(source, by_id, by_name):
     return hits[0]
 
 
-def _fetch_tracks(sp, pid):
-    """All (uri, name, artist) for a playlist, following pagination."""
-    out = []
-    res = sp.playlist_items(pid, additional_types=["track"], limit=100)
-    while res:
-        for it in res["items"]:
-            t = it.get("track")
-            if t and t.get("id"):
-                out.append((t["uri"], t["name"], ", ".join(a["name"] for a in t["artists"])))
-        res = sp.next(res) if res.get("next") else None
-    return out
-
-
 def _fetch_tracks_rich(sp, pid):
-    """Like _fetch_tracks but also carries album + popularity for band selection.
+    """Every track for a playlist as a rich dict (uri/name/artist/album/pop).
 
     playlist_items returns full track objects, so popularity and album ride along
-    with no extra API calls.
+    with no extra API calls. This is the single source of truth for a track pull;
+    the (uri, name, artist) tuple form is derived from it, so both the `tracks`
+    and `roster` commands share one cache file per playlist.
     """
     out = []
     res = sp.playlist_items(pid, additional_types=["track"], limit=100)
@@ -189,6 +182,75 @@ def _fetch_tracks_rich(sp, pid):
                 })
         res = sp.next(res) if res.get("next") else None
     return out
+
+
+# ---------------------------------------------------------------- track cache
+# Source playlists change infrequently, so re-fetching every track on every run
+# is wasteful. We memoize the rich track list per playlist on disk, keyed by
+# Spotify's snapshot_id: unchanged playlist => same snapshot => reuse the file;
+# the moment it's edited the snapshot flips and we re-pull automatically. No TTL.
+#
+# Trade-off (issue #3, Option A): snapshot_id does NOT change when Spotify quietly
+# recomputes a track's `popularity` over time, so a long-unchanged source serves
+# frozen popularity — which `roster` band-selection ranks on. In practice band
+# selection is coarse (skip the top hits), so a few points of drift rarely
+# reorders anything; `--no-cache` is the manual refresh when it matters.
+
+def _cache_file(pid):
+    return os.path.join(MIX_CACHE_DIR, f"{pid}.json")
+
+
+def _read_cache(pid):
+    """Return the cached blob for a playlist, or None if absent/unreadable."""
+    try:
+        with open(_cache_file(pid), encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def _write_cache(pid, snapshot_id, tracks):
+    """Write the track pull atomically (tmp + replace) so a crash can't corrupt it."""
+    os.makedirs(MIX_CACHE_DIR, exist_ok=True)
+    blob = {
+        "snapshot_id": snapshot_id,
+        "fetched_at": datetime.now().isoformat(sep=" "),
+        "tracks": tracks,
+    }
+    tmp = _cache_file(pid) + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(blob, fh, ensure_ascii=False)
+    os.replace(tmp, _cache_file(pid))
+
+
+def _snapshot_id(sp, pid):
+    """The playlist's current snapshot_id — one cheap call, no track items."""
+    return (sp.playlist(pid, fields="snapshot_id") or {}).get("snapshot_id")
+
+
+def _fetch_tracks_rich_cached(sp, pid, use_cache=True):
+    """_fetch_tracks_rich, memoized on disk by snapshot_id.
+
+    Cache hit costs one lightweight `playlist` snapshot call and zero
+    `playlist_items` calls. use_cache=False (the `--no-cache` escape hatch) skips
+    the disk read and forces a live pull, but still rewrites the cache so the next
+    normal run is fresh.
+    """
+    live = _snapshot_id(sp, pid)
+    if use_cache and live is not None:
+        cached = _read_cache(pid)
+        if cached and cached.get("snapshot_id") == live:
+            return cached["tracks"]
+    tracks = _fetch_tracks_rich(sp, pid)
+    if live is not None:
+        _write_cache(pid, live, tracks)
+    return tracks
+
+
+def _fetch_tracks_cached(sp, pid, use_cache=True):
+    """(uri, name, artist) tuples, derived from the shared rich cache."""
+    return [(t["uri"], t["name"], t["artist"])
+            for t in _fetch_tracks_rich_cached(sp, pid, use_cache)]
 
 
 def _parse_ts(s):
@@ -285,7 +347,7 @@ def cmd_tracks(args):
     n_iced    = 0
     for src in args.sources:
         name, pid = _resolve(src, by_id, by_name)
-        for uri, tname, artist in _fetch_tracks(sp, pid):
+        for uri, tname, artist in _fetch_tracks_cached(sp, pid, use_cache=not args.no_cache):
             if uri in seen or uri in frozen:
                 continue
             if uri in iced:
@@ -336,7 +398,7 @@ def cmd_roster(args):
         name, pid = _resolve(src, by_id, by_name)
         # bucket this source's tracks by album, in first-seen order
         albums, order = {}, []
-        for t in _fetch_tracks_rich(sp, pid):
+        for t in _fetch_tracks_rich_cached(sp, pid, use_cache=not args.no_cache):
             if t["album_id"] not in albums:
                 albums[t["album_id"]] = []
                 order.append(t["album_id"])
@@ -584,6 +646,8 @@ def main():
                    help="drop tracks still inside the app's cooldown window")
     t.add_argument("--show-iced", action="store_true",
                    help="include ice-boxed tracks (excluded by default)")
+    t.add_argument("--no-cache", action="store_true",
+                   help="force a live pull, ignoring (and refreshing) the disk cache")
     t.set_defaults(func=cmd_tracks)
 
     ro = sub.add_parser("roster", help="deep-cut candidate pool (band select, cooldown-aware)")
@@ -602,6 +666,8 @@ def main():
                     help="reveal ice-boxed tracks (🧊 column) instead of hiding them")
     ro.add_argument("--sample", type=int, default=0, help="randomly keep N of the candidates (0 = all)")
     ro.add_argument("--seed", type=int, default=None, help="seed for --sample (reproducible)")
+    ro.add_argument("--no-cache", action="store_true",
+                    help="force a live pull, ignoring (and refreshing) the disk cache")
     ro.add_argument("--json", action="store_true")
     ro.set_defaults(func=cmd_roster)
 

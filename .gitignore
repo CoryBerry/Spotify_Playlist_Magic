@@ -3,6 +3,7 @@ __pycache__/
 .env
 instance/
 .cache
+.mix_cache/
 .track_cache.json
 .lastfm_cache.json
 IDEAS.md

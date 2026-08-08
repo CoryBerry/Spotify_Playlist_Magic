@@ -66,9 +66,18 @@ Knobs:
   `--fresh` drops anything on cooldown; `--thawed` surfaces only off-ice throwbacks you've heard before.
 - **Ice box** (manual never-list / timed freeze — see below): iced tracks are excluded from `roster`
   and `tracks` by default. `--show-iced` reveals them tagged `🧊NVR` (never) / `🧊Nd` (days to thaw).
+- `--no-cache` — force a live pull, bypassing (and refreshing) the disk cache described below.
 
 The old `tracks` command still exists for a plain full dump (add `--exclude-cooldown`), but reach
 for it only when you deliberately want *everything*, not for normal curation.
+
+**Track cache:** `roster` and `tracks` memoize each source's track pull to `.mix_cache/<playlist_id>.json`
+(git-ignored, created lazily), keyed by Spotify's `snapshot_id`. An unchanged source is served straight
+from disk — zero `playlist_items` calls — and re-pulls automatically the moment the playlist is edited
+(the snapshot flips). No TTL, no config. One caveat: `snapshot_id` doesn't change when Spotify quietly
+recomputes a track's `popularity`, so a long-untouched source serves *frozen* popularity — which `roster`
+band-selection ranks on. Band selection is coarse enough that a few points of drift rarely matters; reach
+for `--no-cache` if you want the freshest popularity for a build.
 
 ### 3. Curate — this is the part that matters
 Don't shuffle. Hand-pick and **sequence** into an intentional arc. Defaults that have
