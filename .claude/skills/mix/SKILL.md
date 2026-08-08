@@ -67,6 +67,12 @@ Knobs:
 - **Ice box** (manual never-list / timed freeze — see below): iced tracks are excluded from `roster`
   and `tracks` by default. `--show-iced` reveals them tagged `🧊NVR` (never) / `🧊Nd` (days to thaw).
 - `--no-cache` — force a live pull, bypassing (and refreshing) the disk cache described below.
+- `--tags` — annotate each candidate with its **lead artist's** top-5 Last.fm tags (mood/genre
+  context, handy now that Spotify's `/audio-features` is gone). Opt-in; plain `roster` stays offline.
+  Tags show as an appended `[tag, tag, tag]` on the text line and a `"tags": [...]` field in `--json`.
+  Each distinct artist is fetched once per run and reuses `lastfm_service`'s `.lastfm_cache.json`, so
+  repeat rosters are cheap. **Needs `LASTFM_API_KEY`** in `.env` — `--tags` hard-fails without it;
+  individual artists unknown to Last.fm just come back tagless (a stderr line reports how many resolved).
 
 The old `tracks` command still exists for a plain full dump (add `--exclude-cooldown`), but reach
 for it only when you deliberately want *everything*, not for normal curation.
@@ -144,4 +150,5 @@ name-based freeze; if it grabbed the wrong track, thaw it and re-add by URI.
 - Match resolution: `sources`/`tracks`/`roster` accept a full playlist id or a case-insensitive
   name substring; ambiguous names error out — use a fuller name or the id.
 - Keep it simple; this mirrors existing app conventions (see `CLAUDE.md`). No new deps —
-  it reuses `spotipy`, `python-dotenv`, and the SQLite DB the app already uses.
+  it reuses `spotipy`, `python-dotenv`, and the SQLite DB the app already uses; `--tags` reuses the
+  repo's own `lastfm_service` (stdlib-only, no extra pip packages).

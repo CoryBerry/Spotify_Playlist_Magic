@@ -16,10 +16,16 @@ Auth reuses the same Spotipy `.cache` token the Flask app writes, so no browser
 login is needed as long as a valid token exists. Reads are always safe; `create`
 is the only writing verb and must be invoked explicitly.
 
+The `roster` verb can optionally annotate each candidate with its lead artist's
+Last.fm tags (`--tags`, opt-in — needs LASTFM_API_KEY; plain roster stays offline
+and Last.fm-free). Tags give mood/genre context for curation now that Spotify's
+/audio-features is unavailable.
+
 Examples:
     python mix_helper.py sources --search chill
     python mix_helper.py sources --tag selects
     python mix_helper.py tracks "Cory's Chilled Playlist" 43M34ZEoIBEMbe9SDA1atB --exclude-cooldown
+    python mix_helper.py roster "90s Albums" --tags
     python mix_helper.py create --name "Sunday Slow Burn" --desc "..." --uris-file picks.txt --record --cooldown
 """
 import argparse
@@ -38,6 +44,9 @@ from spotipy.oauth2 import SpotifyOAuth
 # .claude/skills/mix/mix_helper.py -> repo root), so the skill works regardless
 # of the current working directory.
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+# Make the repo-root modules (e.g. lastfm_service) importable regardless of cwd.
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 DB_PATH = os.path.join(REPO_ROOT, "instance", "spotify_tools.db")
 CACHE_PATH = os.path.join(REPO_ROOT, ".cache")
 # Disk cache of per-playlist track pulls, keyed by Spotify's snapshot_id so an
@@ -290,6 +299,27 @@ def _band_select(album_tracks, skip_top, per_album, top_mode):
     return album_tracks[skip:skip + per_album]
 
 
+def _annotate_tags(rows, lookup):
+    """Attach each row's lead-artist tags in place, deduping lookups per run.
+
+    `lookup(artist) -> list[str]` is called at most once per distinct lead artist
+    (case-insensitive) — the caller wires it to Last.fm; tests inject a fake. Only
+    the lead artist is used (the comma-joined `artist` field's first name). Returns
+    `(resolved, total, unknown)`: distinct artists with tags, total distinct, and
+    those Last.fm didn't know (empty tags).
+    """
+    cache = {}
+    for t in rows:
+        lead = t["artist"].split(",")[0].strip()
+        key = lead.lower()
+        if key not in cache:
+            cache[key] = lookup(lead)
+        t["tags"] = cache[key]
+    total = len(cache)
+    unknown = sum(1 for tags in cache.values() if not tags)
+    return total - unknown, total, unknown
+
+
 # ---------------------------------------------------------------- commands
 
 def cmd_sources(args):
@@ -438,11 +468,30 @@ def cmd_roster(args):
         rng = random.Random(args.seed)
         rows = rng.sample(rows, args.sample)
 
+    # --tags: annotate the final roster with each lead artist's Last.fm tags.
+    # Opt-in and lazy so plain roster stays offline and Last.fm-free. Hard-fail
+    # if the key is missing (a silent tagless roster would look like a bug); a
+    # per-artist blip degrades to empty tags via lastfm_service, not a crash.
+    if args.tags:
+        import lastfm_service
+        try:
+            lastfm_service.get_api_key()
+        except lastfm_service.LastfmError as exc:
+            sys.exit(f"--tags needs a Last.fm key: {exc}")
+
+        def _lookup(artist):
+            return [d["name"] for d in lastfm_service.artist_top_tags(artist, limit=5)]
+
+        resolved, total, unknown = _annotate_tags(rows, _lookup)
+        print(f"# tags: {resolved}/{total} artists resolved ({unknown} unknown to Last.fm)",
+              file=sys.stderr)
+
     if args.json:
         print(json.dumps(rows, ensure_ascii=False, indent=2))
         return
     for t in rows:
-        print(f"{t['pop']:>3}  {t['ice']:>5}  {t['uri']}  {t['name']} — {t['artist']}  ({t['album']})")
+        tagstr = f"  [{', '.join(t['tags'])}]" if t.get("tags") else ""
+        print(f"{t['pop']:>3}  {t['ice']:>5}  {t['uri']}  {t['name']} — {t['artist']}  ({t['album']}){tagstr}")
     print(f"# {len(rows)} candidates from {len(args.sources)} source(s); "
           f"mode={'top' if args.top else 'band'}, cooldown={cooldown_days}d", file=sys.stderr)
 
@@ -668,6 +717,9 @@ def main():
     ro.add_argument("--seed", type=int, default=None, help="seed for --sample (reproducible)")
     ro.add_argument("--no-cache", action="store_true",
                     help="force a live pull, ignoring (and refreshing) the disk cache")
+    ro.add_argument("--tags", action="store_true",
+                    help="annotate each row with the lead artist's top-5 Last.fm tags "
+                         "(needs LASTFM_API_KEY)")
     ro.add_argument("--json", action="store_true")
     ro.set_defaults(func=cmd_roster)
 
