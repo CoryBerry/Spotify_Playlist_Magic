@@ -62,8 +62,10 @@ Knobs:
 - `--per-album N` (default 3) / `--skip-top N` (default 2) — size and depth of the band.
 - `--per-artist N` — cap one artist from clumping the roster.
 - `--sample N [--seed S]` — randomly keep N of the candidates, so repeated builds surprise.
-- Cooldown/ice column: `·` never played, `❄Nd` on ice (within cooldown), `~Nd` played but thawed.
-  `--fresh` drops anything on ice; `--thawed` surfaces only off-ice throwbacks you've heard before.
+- Cooldown column: `·` never played, `❄Nd` on cooldown ice (within the 7-day window), `~Nd` played but thawed.
+  `--fresh` drops anything on cooldown; `--thawed` surfaces only off-ice throwbacks you've heard before.
+- **Ice box** (manual never-list / timed freeze — see below): iced tracks are excluded from `roster`
+  and `tracks` by default. `--show-iced` reveals them tagged `🧊NVR` (never) / `🧊Nd` (days to thaw).
 
 The old `tracks` command still exists for a plain full dump (add `--exclude-cooldown`), but reach
 for it only when you deliberately want *everything*, not for normal curation.
@@ -98,6 +100,34 @@ remove), so saving first costs nothing and gives Cory something real to react to
   cooldown pool; omit it for a one-off you don't mind repeating.
 
 The helper prints the playlist URL — share it back to the user.
+
+## Ice box — the never-list
+
+A manual, long-lived exclusion list for tracks Cory is sick of. Distinct from the 7-day
+cooldown: cooldown is automatic and short and *yields* when a pool gets small; **ice is a
+hard exclusion** — an iced track never enters *any* build (this skill's `roster`/`tracks`,
+and every Block Mix / Sampler / Album Blast / Text Import build in the web app), even as a
+last-resort fallback. It's the same `track_ice` table on both sides, so a freeze here takes
+effect in the app immediately, and vice versa.
+
+Two shapes, one mechanism — a track is iced while `thaw_at` is NULL or still in the future:
+- **Never-list** — bare `add` (or `--never`): gone until manually thawed.
+- **Timed ice** — `--months N`: resurfaces on its own N months later, nostalgia intact.
+  Timed rows auto-release through the app's existing thaw pass (and count into its
+  "🌊 thawed" tally); never-list rows never auto-release.
+
+```
+# freeze — resolves a URI/URL directly, else searches Spotify and takes the top hit
+PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py ice add "HUMBLE. Kendrick Lamar" --months 6 --reason "heard to death"
+PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py ice add spotify:track:6nzXkCBOhb2mxctNihOqbb   # never-list
+
+# review / release
+PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py ice list
+PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py ice thaw "Bad Girls"   # URI or name substring
+```
+
+`ice add` reports the exact track it matched (name — artist) — read it back before trusting a
+name-based freeze; if it grabbed the wrong track, thaw it and re-add by URI.
 
 ## Notes
 - Reversible: if the user dislikes a result, they can unfollow it, or use the app's

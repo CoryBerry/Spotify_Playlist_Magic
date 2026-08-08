@@ -159,6 +159,26 @@ class AppSettings(db.Model):
     cooldown_max_plays = db.Column(db.Integer, default=2)
 
 
+class TrackIce(db.Model):
+    """Manual, long-lived exclusion — a never-list / timed 'ice box'.
+
+    Distinct from TrackHistory cooldown (automatic, short, yields on a small pool).
+    Ice is a HARD exclusion: an iced track never enters a build, even as fallback.
+    A row is iced *now* when thaw_at IS NULL (never-list) or thaw_at is in the future.
+    name/artist are denormalized so the UI can render a row without a Spotify call.
+    Read by both this app and the `mix` skill's mix_helper.py against the same DB.
+    """
+    id        = db.Column(db.Integer, primary_key=True)
+    track_id  = db.Column(db.String(200), nullable=False)  # URI (Spotify) / ratingKey (Plex)
+    provider  = db.Column(db.String(20),  nullable=False)
+    name      = db.Column(db.String(300))
+    artist    = db.Column(db.String(300))
+    frozen_at = db.Column(db.DateTime, default=datetime.now)
+    thaw_at   = db.Column(db.DateTime, nullable=True)  # NULL = never-list
+    reason    = db.Column(db.String(300))
+    __table_args__ = (db.UniqueConstraint("track_id", "provider"),)
+
+
 with app.app_context():
     db.create_all()
     # Add columns that didn't exist in earlier schema versions
@@ -250,20 +270,51 @@ def get_cooldown_stats(provider):
     }
 
 
+def iced_ids(provider):
+    """Track ids on manual ice *right now*: never-list (thaw_at NULL) or not yet thawed.
+
+    Hard exclusion — callers must drop these unconditionally (no small-pool fallback).
+    """
+    rows = TrackIce.query.filter(
+        TrackIce.provider == provider,
+        db.or_(TrackIce.thaw_at.is_(None), TrackIce.thaw_at > datetime.now()),
+    ).all()
+    return {r.track_id for r in rows}
+
+
 def auto_thaw(provider):
-    """Delete TrackHistory rows older than the cooldown window. Returns count of unique tracks thawed."""
+    """Release expired ice, then delete TrackHistory older than the cooldown window.
+
+    Returns the count of unique tracks thawed (cooldown + timed-ice), folded into the
+    same ThawTally the '🌊 N thawed' UI already reports. Never-list rows (thaw_at NULL)
+    are never released here.
+    """
+    now    = datetime.now()
     s      = get_settings()
-    cutoff = datetime.now() - timedelta(days=s.cooldown_days)
-    rows   = TrackHistory.query.filter(
+    cutoff = now - timedelta(days=s.cooldown_days)
+
+    # Timed ice whose thaw date has passed
+    ice_rows = TrackIce.query.filter(
+        TrackIce.provider == provider,
+        TrackIce.thaw_at.isnot(None),
+        TrackIce.thaw_at <= now,
+    ).all()
+    thawed_ids = {r.track_id for r in ice_rows}
+    for r in ice_rows:
+        db.session.delete(r)
+
+    # Cooldown rows past the window
+    rows = TrackHistory.query.filter(
         TrackHistory.provider == provider,
         TrackHistory.used_at  <  cutoff
     ).all()
-    if not rows:
-        return 0
-    unique = len({r.track_id for r in rows})
+    thawed_ids |= {r.track_id for r in rows}
     for r in rows:
         db.session.delete(r)
-    now = datetime.now()
+
+    unique = len(thawed_ids)
+    if not unique:
+        return 0
     tally = ThawTally.query.filter_by(year=now.year, month=now.month, provider=provider).first()
     if tally:
         tally.count += unique
@@ -570,10 +621,12 @@ def spotify_build():
         TrackHistory.used_at  >= cutoff
     ).group_by(TrackHistory.track_id).all()
     on_cooldown = {r.track_id for r in raw if r.n >= settings.cooldown_max_plays}
+    iced = iced_ids("spotify")  # hard exclusion — never returns, even on small-pool fallback
     cooldown_excluded = sum(sum(1 for t in tracks if t in on_cooldown) for tracks in all_tracks.values())
     for pid in list(all_tracks):
-        fresh = [t for t in all_tracks[pid] if t not in on_cooldown]
-        all_tracks[pid] = fresh if len(fresh) >= block_size else all_tracks[pid]
+        pool  = [t for t in all_tracks[pid] if t not in iced]
+        fresh = [t for t in pool if t not in on_cooldown]
+        all_tracks[pid] = fresh if len(fresh) >= block_size else pool
 
     # Build weighted cycle from non-pinned playlists, then shuffle once
     non_pinned = [pid for pid in selected_ids if pid != pinned_id]
@@ -756,6 +809,9 @@ def album_blast():
             track_uris.extend(item["uri"] for item in results["items"])
             results = sp.next(results) if results["next"] else None
 
+    iced       = iced_ids("spotify")  # hard exclusion, even on explicit picks
+    track_uris = [u for u in track_uris if u not in iced]
+
     # Create new playlist and add tracks in batches of 100
     user_id      = sp.me()["id"]
     new_playlist = sp.user_playlist_create(
@@ -870,6 +926,9 @@ def sample_build():
         album_names.append(album["name"])
         track_uris.extend(album["uris"][:songs_per])  # first X tracks of the album
 
+    iced       = iced_ids("spotify")  # hard exclusion, even on explicit picks
+    track_uris = [u for u in track_uris if u not in iced]
+
     title    = (request.form.get("title") or "").strip() or playlist_name
     new_name = f"{title} : Album Samples {datetime.now().strftime('%m/%d')}"
 
@@ -932,6 +991,7 @@ def album_sampler_blocks():
         TrackHistory.used_at  >= cutoff
     ).group_by(TrackHistory.track_id).all()
     on_cooldown = {r.track_id for r in raw if r.n >= settings.cooldown_max_plays}
+    iced = iced_ids("spotify")  # hard exclusion — never returns, even on small-pool fallback
 
     track_uris  = []
     album_names = []
@@ -940,7 +1000,7 @@ def album_sampler_blocks():
         album_ids = list(albums.keys())
         picked    = random.sample(album_ids, min(albums_per, len(album_ids)))
         for aid in picked:
-            uris  = albums[aid]["uris"]
+            uris  = [u for u in albums[aid]["uris"] if u not in iced]
             fresh = [u for u in uris if u not in on_cooldown]
             pool  = fresh if len(fresh) >= songs_per else uris  # fall back if too few remain
             track_uris.extend(random.sample(pool, min(songs_per, len(pool))))
@@ -1166,9 +1226,11 @@ def plex_build():
         TrackHistory.used_at  >= cutoff
     ).group_by(TrackHistory.track_id).all()
     on_cooldown = {r.track_id for r in raw if r.n >= settings.cooldown_max_plays}
+    iced = iced_ids("plex")  # hard exclusion — never returns, even on small-pool fallback
     for key in list(all_tracks):
-        fresh = [t for t in all_tracks[key] if str(t.ratingKey) not in on_cooldown]
-        all_tracks[key] = fresh if len(fresh) >= block_size else all_tracks[key]
+        pool  = [t for t in all_tracks[key] if str(t.ratingKey) not in iced]
+        fresh = [t for t in pool if str(t.ratingKey) not in on_cooldown]
+        all_tracks[key] = fresh if len(fresh) >= block_size else pool
 
     # Build weighted cycle from non-pinned playlists, then shuffle once
     non_pinned = [k for k in selected_keys if k != pinned_key]
@@ -1281,6 +1343,9 @@ def plex_album_blast():
     for album in albums:
         album_names.append(album.title)
         all_tracks.extend(album.tracks())
+
+    iced       = iced_ids("plex")  # hard exclusion, even on explicit picks
+    all_tracks = [t for t in all_tracks if str(t.ratingKey) not in iced]
 
     title        = f"Album Blast {_now_label()}"
     new_playlist = plex.createPlaylist(title, items=all_tracks)
@@ -1525,6 +1590,9 @@ def text_import_build():
                 res = sp.next(res) if res["next"] else None
         else:
             track_uris.append(uri)
+
+    iced       = iced_ids("spotify")  # hard exclusion, even on explicit picks
+    track_uris = [u for u in track_uris if u not in iced]
 
     if not track_uris:
         return redirect(url_for("text_import"))

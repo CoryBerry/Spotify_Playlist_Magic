@@ -84,6 +84,59 @@ def _cooldown_days():
     return row[0] if row else 7
 
 
+# ---------------------------------------------------------------- ice box
+# A manual, long-lived exclusion list ("never-list" / timed freeze) shared with
+# the Flask app via the same `track_ice` table. Distinct from the 7-day cooldown:
+# ice is a HARD exclusion (never yields to a small pool) and can last months or
+# forever. thaw_at IS NULL => never-list; thaw_at in the future => timed ice.
+
+def _add_months(dt, n):
+    """Calendar-correct month add — '6-month ice' thaws the same day, 6 months on."""
+    m = dt.month - 1 + n
+    y = dt.year + m // 12
+    m = m % 12 + 1
+    leap = y % 4 == 0 and (y % 100 != 0 or y % 400 == 0)
+    dim = [31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1]
+    return dt.replace(year=y, month=m, day=min(dt.day, dim))
+
+
+def _ensure_ice_table(db):
+    """Create track_ice if the app hasn't yet (matches the SQLAlchemy schema)."""
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS track_ice ("
+        " id INTEGER PRIMARY KEY,"
+        " track_id VARCHAR(200) NOT NULL,"
+        " provider VARCHAR(20) NOT NULL,"
+        " name VARCHAR(300), artist VARCHAR(300),"
+        " frozen_at DATETIME, thaw_at DATETIME, reason VARCHAR(300),"
+        " UNIQUE(track_id, provider))"
+    )
+    db.commit()
+
+
+def _iced_rows(db, provider="spotify"):
+    """Rows on ice *right now*: never-list (thaw_at NULL) or thaw_at still in the future.
+
+    thaw_at is stored in ISO 'YYYY-MM-DD HH:MM:SS.ffffff' form by both writers, so a
+    lexical string compare against `now` is a correct chronological compare.
+    """
+    _ensure_ice_table(db)
+    now = datetime.now().isoformat(sep=" ")
+    return db.execute(
+        "SELECT track_id, name, artist, thaw_at, reason FROM track_ice "
+        "WHERE provider=? AND (thaw_at IS NULL OR thaw_at > ?) ORDER BY frozen_at",
+        (provider, now),
+    ).fetchall()
+
+
+def _ice_label(thaw_at):
+    """Column tag for an iced track: 🧊NVR (never) or 🧊<days>d until it thaws."""
+    if thaw_at is None:
+        return "🧊NVR"
+    days = (_parse_ts(thaw_at) - datetime.now()).days
+    return f"🧊{days}d"
+
+
 def _resolve(source, by_id, by_name):
     """Resolve a source token (exact id, else case-insensitive name substring)."""
     if source in by_id:
@@ -226,19 +279,25 @@ def cmd_tracks(args):
             (cutoff.isoformat(sep=" "),),
         )}
 
-    seen = set()
+    iced = set() if args.show_iced else {r[0] for r in _iced_rows(_db())}
+
+    seen      = set()
+    n_iced    = 0
     for src in args.sources:
         name, pid = _resolve(src, by_id, by_name)
         for uri, tname, artist in _fetch_tracks(sp, pid):
-            if uri in seen:
+            if uri in seen or uri in frozen:
                 continue
-            if uri in frozen:
+            if uri in iced:
+                n_iced += 1
                 continue
             seen.add(uri)
             # Tab-separated so the skill can parse uri / name / artist cleanly.
             print(f"{uri}\t{tname}\t{artist}")
     if args.exclude_cooldown:
         print(f"# excluded {len(frozen)} tracks in cooldown", file=sys.stderr)
+    if n_iced:
+        print(f"# excluded {n_iced} iced track(s) — see `ice list`", file=sys.stderr)
 
 
 def cmd_roster(args):
@@ -256,6 +315,10 @@ def cmd_roster(args):
     cooldown_days = _cooldown_days()
     last_used = _last_used_map()
     now = datetime.now()
+
+    # Manual ice box: track_id -> thaw_at. Hard exclusion by default; --show-iced
+    # reveals them labelled with the 🧊 column so you can review before thawing.
+    iced_map = {r[0]: r[3] for r in _iced_rows(_db())}
 
     def ice_of(uri):
         """(label, frozen, days) — days since last play, or None if never played."""
@@ -283,7 +346,12 @@ def cmd_roster(args):
             for t in _band_select(ranked, args.skip_top, args.per_album, args.top):
                 if t["uri"] in seen:
                     continue
-                label, frozen, days = ice_of(t["uri"])
+                if t["uri"] in iced_map:
+                    if not args.show_iced:
+                        continue  # hard exclusion — iced tracks aren't build candidates
+                    label, frozen, days = _ice_label(iced_map[t["uri"]]), True, None
+                else:
+                    label, frozen, days = ice_of(t["uri"])
                 # --fresh: drop anything still on ice. --thawed: only played-but-thawed.
                 if args.fresh and frozen:
                     continue
@@ -417,6 +485,89 @@ def cmd_replace(args):
         print(f"updated created_playlist{extra}")
 
 
+def _extract_track_uri(tok):
+    """Return a spotify:track: URI from a URI or open.spotify.com URL, else None."""
+    if tok.startswith("spotify:track:"):
+        return tok
+    if "open.spotify.com/track/" in tok:
+        return "spotify:track:" + tok.split("track/")[-1].split("?")[0].split("/")[0]
+    return None
+
+
+def cmd_ice(args):
+    """Manage the shared ice box: add (never / timed), list, thaw. DB is the source
+    of truth — the Flask app's builds read the same table, so a freeze here takes
+    effect everywhere immediately."""
+    db = _db()
+    _ensure_ice_table(db)
+
+    if args.action == "list":
+        rows = _iced_rows(db)
+        if not rows:
+            print("Ice box is empty.")
+            return
+        for tid, name, artist, thaw_at, reason in rows:
+            when = "never" if thaw_at is None else f"thaws {thaw_at.split('.')[0]}"
+            why  = f"  — {reason}" if reason else ""
+            print(f"{_ice_label(thaw_at):>7}  {name or '?'} — {artist or '?'}  ({when}){why}  [{tid}]")
+        print(f"# {len(rows)} track(s) on ice", file=sys.stderr)
+        return
+
+    if not args.track:
+        sys.exit(f"ice {args.action} needs a track (URI/URL/name).")
+
+    if args.action == "thaw":
+        rows = db.execute(
+            "SELECT track_id, name, artist FROM track_ice WHERE provider='spotify'"
+        ).fetchall()
+        uri = _extract_track_uri(args.track)
+        if uri:
+            hits = [r for r in rows if r[0] == uri]
+        else:
+            t = args.track.lower()
+            hits = [r for r in rows if t in (r[1] or "").lower()]
+        if not hits:
+            sys.exit(f"No iced track matches {args.track!r}.")
+        if len(hits) > 1:
+            names = "; ".join(f"{n} — {a}" for _, n, a in hits[:8])
+            sys.exit(f"{args.track!r} is ambiguous — matches: {names}. Use the URI.")
+        db.execute("DELETE FROM track_ice WHERE track_id=? AND provider='spotify'", (hits[0][0],))
+        db.commit()
+        print(f"THAWED  {hits[0][1]} — {hits[0][2]}  [{hits[0][0]}]")
+        return
+
+    # action == add — resolve URI directly, else search Spotify and take the top hit
+    sp  = _client()
+    uri = _extract_track_uri(args.track)
+    if uri:
+        t = sp.track(uri)
+    else:
+        items = sp.search(q=args.track, type="track", limit=5)["tracks"]["items"]
+        if not items:
+            sys.exit(f"No Spotify track found for {args.track!r}.")
+        t, uri = items[0], items[0]["uri"]
+    name   = t["name"]
+    artist = ", ".join(a["name"] for a in t["artists"])
+
+    if args.months:
+        thaw = _add_months(datetime.now(), args.months).isoformat(sep=" ")
+        dur  = f"{args.months}-month ice (thaws {thaw.split()[0]})"
+    else:
+        thaw, dur = None, "never-list"
+    now = datetime.now().isoformat(sep=" ")
+    db.execute(
+        "INSERT INTO track_ice (track_id, provider, name, artist, frozen_at, thaw_at, reason) "
+        "VALUES (?, 'spotify', ?, ?, ?, ?, ?) "
+        "ON CONFLICT(track_id, provider) DO UPDATE SET "
+        "name=excluded.name, artist=excluded.artist, frozen_at=excluded.frozen_at, "
+        "thaw_at=excluded.thaw_at, reason=excluded.reason",
+        (uri, name, artist, now, thaw, args.reason),
+    )
+    db.commit()
+    why = f"  — {args.reason}" if args.reason else ""
+    print(f"ICED  {name} — {artist}  ({dur}){why}  [{uri}]")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Plumbing for the `mix` skill.")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -431,6 +582,8 @@ def main():
     t.add_argument("sources", nargs="+", help="playlist names (substring) or ids")
     t.add_argument("--exclude-cooldown", action="store_true",
                    help="drop tracks still inside the app's cooldown window")
+    t.add_argument("--show-iced", action="store_true",
+                   help="include ice-boxed tracks (excluded by default)")
     t.set_defaults(func=cmd_tracks)
 
     ro = sub.add_parser("roster", help="deep-cut candidate pool (band select, cooldown-aware)")
@@ -445,6 +598,8 @@ def main():
     ro.add_argument("--fresh", action="store_true", help="drop tracks still on ice (within cooldown)")
     ro.add_argument("--thawed", action="store_true",
                     help="only tracks you've played before but are now off ice (throwbacks)")
+    ro.add_argument("--show-iced", action="store_true",
+                    help="reveal ice-boxed tracks (🧊 column) instead of hiding them")
     ro.add_argument("--sample", type=int, default=0, help="randomly keep N of the candidates (0 = all)")
     ro.add_argument("--seed", type=int, default=None, help="seed for --sample (reproducible)")
     ro.add_argument("--json", action="store_true")
@@ -471,6 +626,17 @@ def main():
     r.add_argument("--cooldown", action="store_true",
                    help="with --record, also write tracks to track_history")
     r.set_defaults(func=cmd_replace)
+
+    i = sub.add_parser("ice", help="manual ice box: never-list / timed freeze, shared with the app")
+    i.add_argument("action", choices=["add", "list", "thaw"])
+    i.add_argument("track", nargs="?",
+                   help="add: URI/URL or search query; thaw: URI or name substring")
+    i.add_argument("--months", type=int, default=0,
+                   help="add: timed ice of N months (default: never-list)")
+    i.add_argument("--never", action="store_true",
+                   help="add: explicit never-list (the default when no --months)")
+    i.add_argument("--reason", default=None, help="add: why (e.g. 'heard to death')")
+    i.set_defaults(func=cmd_ice)
 
     args = ap.parse_args()
     args.func(args)
