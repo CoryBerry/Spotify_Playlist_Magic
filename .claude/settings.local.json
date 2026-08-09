@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(python3:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(PYTHONUTF8=1 python *)",
+      "Bash(gh issue *)",
+      "Bash(gh label *)",
+      "Read(//c/Users/cberr/.claude/skills/**)"
     ]
   }
 }
