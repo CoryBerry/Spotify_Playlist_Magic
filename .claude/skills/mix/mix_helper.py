@@ -54,6 +54,10 @@ CACHE_PATH = os.path.join(REPO_ROOT, ".cache")
 # file per playlist; created lazily; git-ignored. See _fetch_tracks_rich_cached.
 MIX_CACHE_DIR = os.path.join(REPO_ROOT, ".mix_cache")
 SCOPE = "playlist-read-private playlist-modify-private playlist-modify-public"
+# Name tag prepended to every mix we ship, so generated playlists group together
+# in the library (Spotify's API can't file into folders). Idempotent; opt out
+# with `create --no-prefix`.
+MIX_PREFIX = "[Mix]"
 
 
 # ---------------------------------------------------------------- infra
@@ -513,16 +517,20 @@ def cmd_create(args):
     if not uris:
         sys.exit("No spotify:track: URIs found on stdin or in --uris-file.")
 
+    name = args.name
+    if not args.no_prefix and not name.startswith(MIX_PREFIX):
+        name = f"{MIX_PREFIX} {name}"
+
     sp = _client()
     uid = sp.me()["id"]
     pl = sp.user_playlist_create(
-        uid, args.name, public=args.public, description=args.desc or ""
+        uid, name, public=args.public, description=args.desc or ""
     )
     for i in range(0, len(uris), 100):
         sp.playlist_add_items(pl["id"], uris[i:i + 100])
 
     url = pl["external_urls"]["spotify"]
-    print(f"CREATED  {args.name}  ({len(uris)} tracks)")
+    print(f"CREATED  {name}  ({len(uris)} tracks)")
     print(url)
 
     if args.record:
@@ -531,7 +539,7 @@ def cmd_create(args):
         db.execute(
             "INSERT INTO created_playlist (playlist_id, name, tool, provider, url, "
             "created_at, alive, track_count) VALUES (?,?,?,?,?,?,1,?)",
-            (pl["id"], args.name, "Mix", "spotify", url, now, len(uris)),
+            (pl["id"], name, "Mix", "spotify", url, now, len(uris)),
         )
         if args.cooldown:
             db.executemany(
@@ -728,6 +736,8 @@ def main():
     c.add_argument("--desc", default="")
     c.add_argument("--uris-file", help="file of URIs (else read stdin)")
     c.add_argument("--public", action="store_true", help="make public (default private)")
+    c.add_argument("--no-prefix", action="store_true",
+                   help=f"don't prepend the '{MIX_PREFIX}' name tag")
     c.add_argument("--record", action="store_true",
                    help="log to created_playlist (shows in Recently Created)")
     c.add_argument("--cooldown", action="store_true",

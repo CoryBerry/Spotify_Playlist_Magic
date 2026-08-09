@@ -20,6 +20,11 @@ PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py <command> ...
 Auth reuses the Flask app's `.cache` token (scopes include `playlist-modify-private`).
 If the helper reports no cached token, tell the user to log into the app once, then retry.
 
+## Two entry modes
+
+- **`mix <vibe>`** — build-and-ship. Run the whole loop and **save first, then review** (step 4). Cory reacts to a real playlist.
+- **`preview mix <vibe>`** — plan first, don't build yet. Do step 1 (pick sources), then **reply with the plan and stop**: name the exact playlists you'll draw from (and rough per-bucket split / track count / shape), and ask any genuinely ambiguous questions (1–3 max — eras, hard/soft, length, a lean). **Wait for his go-ahead** before pulling rosters, curating, or saving. Once he confirms (or edits the plan), continue the loop normally from step 2. Keep it tight — a short plan + a couple questions, not an interrogation.
+
 ## The loop
 
 ### 1. Pick sources by vibe
@@ -108,6 +113,9 @@ by section with your design notes)**, and **ask if there are any changes** — s
 trim/extend, re-sequence. Making a mix is reversible (unfollow, or Recently Created →
 remove), so saving first costs nothing and gives Cory something real to react to.
 
+- Every mix is auto-prefixed **`[Mix] `** in its name (so generated playlists group
+  together in the library — Spotify's API can't file into folders). It's idempotent, so
+  you can pass `--name "[Mix] …"` or plain `--name "…"`; opt out with `--no-prefix`.
 - Playlists are **private** by default. Only pass `--public` if asked.
 - `--record` logs it to `created_playlist` so it shows in the app's Recently Created page.
 - `--cooldown` (with `--record`) writes the tracks to `track_history` so future Block Mix /
