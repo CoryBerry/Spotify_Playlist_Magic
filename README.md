@@ -34,7 +34,15 @@ Tag your playlists with free-form labels like "chill", "office", or "instrumenta
 
 ### 📊 Playlist Stats
 
-See track count, total runtime, unique artist count, and a top-10 artist breakdown for any playlist. Also shows how many times it's been used in a Block Mix build.
+See track count, total runtime, unique artist count, and a top-10 artist breakdown for any playlist. Also shows how many times it's been used in a Block Mix build, plus a full tracklist with a 🧊 snowflake on every row so you can freeze a track into the Ice Box without leaving the page.
+
+### 🧊 Ice Box
+
+A manual, long-lived exclusion list — a **hard** never-list or a timed freeze — shared with the `mix` skill (both read and write the same `track_ice` table, so a freeze in either place is honored by the next build immediately). Unlike the automatic cooldown, an iced track *never* enters a build, even as a small-pool fallback.
+
+- **Ice Box page** (`/spotify/ice-box`) lists every currently-frozen track with its reason and thaw date (or "never"), each with a **Thaw** button.
+- **Freeze a track** search resolves any Spotify title/artist and freezes it for **Never / 12 / 6 / 3 months** with an optional reason — even tracks that aren't in any recent build.
+- The same 🧊 snowflake dropdown appears on the **build done page** tracklist and the **Playlist Stats** tracklist, and a 🧊 shortcut on each **Manage** row jumps to that playlist's tracklist. Timed ice thaws itself on the same schedule as the cooldown.
 
 ### 🕓 Recently Created
 

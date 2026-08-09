@@ -270,6 +270,20 @@ def get_cooldown_stats(provider):
     }
 
 
+def _add_months(dt, n):
+    """Calendar-correct month add — '6-month ice' thaws the same day, 6 months on.
+
+    Mirrors the same helper in the mix skill's mix_helper.py so a freeze from the
+    web UI and a freeze from the CLI land on identical thaw dates.
+    """
+    m = dt.month - 1 + n
+    y = dt.year + m // 12
+    m = m % 12 + 1
+    leap = y % 4 == 0 and (y % 100 != 0 or y % 400 == 0)
+    dim = [31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1]
+    return dt.replace(year=y, month=m, day=min(dt.day, dim))
+
+
 def iced_ids(provider):
     """Track ids on manual ice *right now*: never-list (thaw_at NULL) or not yet thawed.
 
@@ -591,17 +605,28 @@ def spotify_build():
 
     t0 = time.time()
 
-    # Fetch all tracks for each playlist — paginate to get the full pool
+    # Fetch all tracks for each playlist — paginate to get the full pool.
+    # track_meta rides along (name/artist per URI) so the done page can render a
+    # tracklist + per-track freeze snowflake without a second round of API calls.
     all_tracks     = {}
+    track_meta      = {}
     playlist_names  = {}
     playlist_owners = {}
     for playlist_id in selected_ids:
         playlist_names[playlist_id]  = request.form.get(f"name_{playlist_id}", playlist_id)
         playlist_owners[playlist_id] = request.form.get(f"owner_{playlist_id}", "")
         tracks  = []
-        results = sp.playlist_tracks(playlist_id, fields="next,items(track(uri))")
+        results = sp.playlist_tracks(playlist_id, fields="next,items(track(uri,name,artists(name)))")
         while results:
-            tracks.extend(item["track"]["uri"] for item in results["items"] if item["track"])
+            for item in results["items"]:
+                tr = item["track"]
+                if not tr:
+                    continue
+                tracks.append(tr["uri"])
+                track_meta[tr["uri"]] = {
+                    "name":   tr["name"],
+                    "artist": ", ".join(a["name"] for a in tr.get("artists", [])),
+                }
             results = sp.next(results) if results["next"] else None
         all_tracks[playlist_id] = tracks
 
@@ -730,9 +755,15 @@ def spotify_build():
         db.session.add(TrackHistory(track_id=uri, provider="spotify"))
     db.session.commit()
 
+    tracklist = [{"uri": u,
+                  "name":   track_meta.get(u, {}).get("name", ""),
+                  "artist": track_meta.get(u, {}).get("artist", "")}
+                 for u in track_uris]
+
     return render_template("spotify_done.html", playlist=new_playlist, track_count=len(track_uris),
                            cooldown_excluded=cooldown_excluded,
-                           source_names=list(playlist_names.values()))
+                           source_names=list(playlist_names.values()),
+                           tracklist=tracklist)
 
 
 @app.route("/spotify/album-blaster")
@@ -1082,6 +1113,94 @@ def tags_all():
     return jsonify({"tags": tags})
 
 
+# ---------------------------------------------------------------
+# Routes — Ice Box (shared track_ice table; see iced_ids/auto_thaw)
+# ---------------------------------------------------------------
+
+@app.route("/spotify/ice-box")
+def spotify_ice_box():
+    """Web-native curation surface for the shared ice box (issue #7).
+
+    Reads/writes the same `track_ice` table the `mix` skill uses, so a freeze here
+    is honored by the next build (and a CLI freeze shows up here) with no sync step.
+    """
+    auto_thaw("spotify")  # release any expired timed ice before rendering
+    rows = (TrackIce.query
+            .filter_by(provider="spotify")
+            .order_by(TrackIce.frozen_at.desc())
+            .all())
+    return render_template("spotify_ice_box.html", iced=rows, now=datetime.now())
+
+
+@app.route("/spotify/ice/freeze", methods=["POST"])
+def spotify_ice_freeze():
+    """Freeze a track: months>0 = timed ice, months<=0/absent = never-list.
+
+    Upserts on (track_id, provider) so re-freezing a track just updates its terms —
+    same ON CONFLICT semantics as the mix skill's `ice add`.
+    """
+    data     = request.json or {}
+    track_id = (data.get("track_id") or "").strip()
+    if not track_id:
+        return jsonify({"error": "missing track_id"}), 400
+    name   = (data.get("name")   or "").strip() or None
+    artist = (data.get("artist") or "").strip() or None
+    reason = (data.get("reason") or "").strip() or None
+    try:
+        months = int(data.get("months") or 0)
+    except (TypeError, ValueError):
+        months = 0
+    thaw_at = _add_months(datetime.now(), months) if months > 0 else None
+
+    row = TrackIce.query.filter_by(track_id=track_id, provider="spotify").first()
+    if row:
+        if name:   row.name   = name
+        if artist: row.artist = artist
+        row.reason    = reason
+        row.frozen_at = datetime.now()
+        row.thaw_at   = thaw_at
+    else:
+        db.session.add(TrackIce(track_id=track_id, provider="spotify", name=name,
+                                artist=artist, frozen_at=datetime.now(),
+                                thaw_at=thaw_at, reason=reason))
+    db.session.commit()
+    return jsonify({"ok": True,
+                    "thaw_at": thaw_at.strftime("%Y-%m-%d") if thaw_at else None,
+                    "label":   thaw_at.strftime("%b %d, %Y") if thaw_at else "never"})
+
+
+@app.route("/spotify/ice/thaw", methods=["POST"])
+def spotify_ice_thaw():
+    """Manually thaw (unfreeze) a track — deletes its row from the ice box."""
+    track_id = ((request.json or {}).get("track_id") or "").strip()
+    if not track_id:
+        return jsonify({"error": "missing track_id"}), 400
+    TrackIce.query.filter_by(track_id=track_id, provider="spotify").delete()
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/spotify/ice/search")
+def spotify_ice_search():
+    """Search Spotify for a track to freeze (freeze-a-track box on the Ice Box page)."""
+    sp = get_spotify_client()
+    if not sp:
+        return jsonify({"error": "not connected"}), 401
+    q = request.args.get("q", "").strip()
+    if not q:
+        return jsonify({"results": []})
+    items = sp.search(q=q, type="track", limit=8)["tracks"]["items"]
+    iced  = iced_ids("spotify")
+    results = [{
+        "uri":    t["uri"],
+        "name":   t["name"],
+        "artist": ", ".join(a["name"] for a in t["artists"]),
+        "album":  t["album"]["name"],
+        "iced":   t["uri"] in iced,
+    } for t in items]
+    return jsonify({"results": results})
+
+
 @app.route("/spotify/manage")
 def spotify_manage():
     sp = get_spotify_client()
@@ -1379,7 +1498,7 @@ def spotify_stats(playlist_id):
     playlist = sp.playlist(playlist_id, fields="name,tracks.total")
 
     tracks  = []
-    results = sp.playlist_tracks(playlist_id, fields="next,items(track(name,duration_ms,artists(name)))")
+    results = sp.playlist_tracks(playlist_id, fields="next,items(track(uri,name,duration_ms,artists(name)))")
     while results:
         for item in results["items"]:
             if item["track"]:
@@ -1405,12 +1524,19 @@ def spotify_stats(playlist_id):
                      .order_by(BuildSource.position)
                      .all()) if cp else []
 
+    iced      = iced_ids("spotify")
+    tracklist = [{"uri": t.get("uri", ""),
+                  "name": t.get("name", ""),
+                  "artist": ", ".join(a["name"] for a in t.get("artists", [])),
+                  "iced": t.get("uri", "") in iced}
+                 for t in tracks if t.get("uri")]
+
     user_id = sp.me()["id"]
     return render_template("spotify_stats.html", playlist=playlist,
                            track_count=len(tracks), hours=hours, minutes=minutes,
                            unique_artists=len(artists), top_artists=top_artists,
                            use_count=use_count, build_sources=build_sources,
-                           user_id=user_id)
+                           user_id=user_id, tracklist=tracklist)
 
 
 @app.route("/spotify/stats")

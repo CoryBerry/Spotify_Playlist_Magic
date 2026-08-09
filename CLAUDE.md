@@ -73,7 +73,11 @@ TrackIce          # manual never-list / timed freeze (thaw_at NULL=never); HARD 
 | `/spotify/text-import` | Text Import — paste/upload a text list of albums or tracks |
 | `/spotify/text-import/preview` | POST — parse text, search Spotify, Trust It or show manual review |
 | `/spotify/text-import/build` | POST — create playlist from manual-select form |
-| `/spotify/stats/<id>` | Track count, runtime, top artists, usage count |
+| `/spotify/stats/<id>` | Track count, runtime, top artists, usage count, tracklist with per-track 🧊 freeze |
+| `/spotify/ice-box` | Ice Box — list frozen tracks (thaw date/"never") + freeze-a-track search |
+| `/spotify/ice/freeze` | POST JSON — freeze a track (never-list or timed); upserts on (track_id, provider) |
+| `/spotify/ice/thaw` | POST JSON — thaw (delete) a track from the ice box |
+| `/spotify/ice/search` | GET JSON — Spotify track search for the freeze-a-track box |
 | `/spotify/cache/refresh` | Force invalidate playlist cache |
 | `/recently-created` | History of created playlists with alive/deleted status |
 | `/recently-created/remove/<id>` | POST — delete from provider + remove from history |
@@ -94,7 +98,7 @@ TrackIce          # manual never-list / timed freeze (thaw_at NULL=never); HARD 
 
 **7-day cooldown:** tracks used in any build are written to `TrackHistory`. New builds exclude them unless the remaining pool would be smaller than `block_size` (safety fallback keeps the build from failing).
 
-**Ice box (`TrackIce` + `iced_ids(provider)`):** a manual, long-lived exclusion — never-list (`thaw_at` NULL) or timed freeze (`thaw_at` in the future). Unlike cooldown, it's a **hard** exclusion: `iced_ids()` is filtered from the pool *before* the cooldown fallback (so an iced track never returns on a small pool) and applied as a final filter on the deterministic tools (Album Blast, Text Import) too. Timed ice is released by `auto_thaw()` alongside cooldown and folded into the same `ThawTally`. Curated primarily from the `mix` skill (`mix_helper.py ice add/list/thaw`), which reads/writes the same table. Web UI is pending (issue #7).
+**Ice box (`TrackIce` + `iced_ids(provider)`):** a manual, long-lived exclusion — never-list (`thaw_at` NULL) or timed freeze (`thaw_at` in the future). Unlike cooldown, it's a **hard** exclusion: `iced_ids()` is filtered from the pool *before* the cooldown fallback (so an iced track never returns on a small pool) and applied as a final filter on the deterministic tools (Album Blast, Text Import) too. Timed ice is released by `auto_thaw()` alongside cooldown and folded into the same `ThawTally`. Curated from both the `mix` skill (`mix_helper.py ice add/list/thaw`) and the web Ice Box (`/spotify/ice-box`, `/spotify/ice/{freeze,thaw,search}`), which read/write the same table — a freeze in either surface is honored by the next build with no sync step. The web freeze snowflake (`templates/_ice.html` macro + a delegated handler in `base.html`) also appears on the build done page and Stats tracklists. `_add_months()` in `app.py` mirrors the mix skill's helper so both writers land identical thaw dates.
 
 **Mood presets (`MOOD_PRESETS`):** code is present but disabled. Spotify restricted `/audio-features` for new apps in late 2024. Do not re-enable without verifying API access.
 

@@ -1,0 +1,21 @@
+{# Shared "freeze a track" snowflake dropdown. Import with:
+     {% from "_ice.html" import snowflake %}
+   The click handling lives globally in base.html (delegated on .ice-freeze),
+   so every page that renders this macro gets working freeze behavior for free. #}
+{% macro snowflake(uri, name, artist, iced=false, label='') %}
+<div class="dropdown d-inline-block ice-cell"
+     data-uri="{{ uri }}" data-name="{{ name }}" data-artist="{{ artist }}">
+  <button class="btn btn-sm py-0 dropdown-toggle ice-btn {{ 'btn-info' if iced else 'btn-outline-info' }}"
+          type="button" data-bs-toggle="dropdown" aria-expanded="false"
+          title="{{ 'On ice' if iced else 'Freeze this track' }}">
+    🧊<span class="ice-btn-label">{% if iced %} {{ label or 'iced' }}{% endif %}</span>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><h6 class="dropdown-header">Freeze this track</h6></li>
+    <li><a class="dropdown-item ice-freeze" href="#" data-months="0">Never</a></li>
+    <li><a class="dropdown-item ice-freeze" href="#" data-months="12">12 months</a></li>
+    <li><a class="dropdown-item ice-freeze" href="#" data-months="6">6 months</a></li>
+    <li><a class="dropdown-item ice-freeze" href="#" data-months="3">3 months</a></li>
+  </ul>
+</div>
+{% endmacro %}

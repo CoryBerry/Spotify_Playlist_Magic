@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+
+{% block title %}Ice Box{% endblock %}
+
+{% block content %}
+  <div class="d-flex justify-content-between align-items-baseline mb-2">
+    <h2 class="mb-0">🧊 Ice Box <span class="text-muted fs-6">{{ iced|length }} on ice</span></h2>
+  </div>
+  <p class="text-muted small">
+    A hard exclusion list shared with the <code>mix</code> skill. Iced tracks never enter a
+    build — never-list forever, or timed freeze until they thaw on their own. Freezing or
+    thawing here takes effect on the very next build.
+  </p>
+
+  <!-- Freeze a track -->
+  <div class="card mb-4">
+    <div class="card-body">
+      <h5 class="card-title">Freeze a track</h5>
+      <div class="row g-2 align-items-center">
+        <div class="col-md-6">
+          <input type="text" id="iceSearch" class="form-control" placeholder="Search a title / artist…" autocomplete="off">
+        </div>
+        <div class="col-auto">
+          <select id="iceMonths" class="form-select">
+            <option value="0">Never</option>
+            <option value="12">12 months</option>
+            <option value="6">6 months</option>
+            <option value="3">3 months</option>
+          </select>
+        </div>
+        <div class="col">
+          <input type="text" id="iceReason" class="form-control" placeholder="Reason (optional)">
+        </div>
+      </div>
+      <div id="iceResults" class="list-group mt-2"></div>
+    </div>
+  </div>
+
+  <!-- Currently frozen -->
+  {% if iced %}
+    <table class="table table-hover align-middle">
+      <thead class="table-dark">
+        <tr>
+          <th>Track</th>
+          <th>Reason</th>
+          <th>Thaws</th>
+          <th style="width: 6rem;"></th>
+        </tr>
+      </thead>
+      <tbody id="iceBody">
+        {% for row in iced %}
+          <tr data-uri="{{ row.track_id }}">
+            <td>
+              {{ row.name or '?' }}<span class="text-muted"> — {{ row.artist or '?' }}</span>
+            </td>
+            <td class="text-muted small">{{ row.reason or '' }}</td>
+            <td>
+              {% if row.thaw_at %}
+                <span class="badge bg-info text-dark">{{ row.thaw_at.strftime('%b %d, %Y') }}</span>
+              {% else %}
+                <span class="badge bg-secondary">never</span>
+              {% endif %}
+            </td>
+            <td class="text-end">
+              <button type="button" class="btn btn-sm btn-outline-warning thaw-btn">Thaw</button>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="text-muted">Nothing on ice. Freeze a track above, or from any tracklist or build page.</p>
+  {% endif %}
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    // ---- Freeze a track: live search + freeze with chosen duration/reason ----
+    const search  = document.getElementById("iceSearch");
+    const results = document.getElementById("iceResults");
+    const monthsSel = document.getElementById("iceMonths");
+    const reasonIn  = document.getElementById("iceReason");
+    let   timer;
+
+    function esc(s) {
+      const d = document.createElement("div");
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    search.addEventListener("input", () => {
+      clearTimeout(timer);
+      const q = search.value.trim();
+      if (!q) { results.innerHTML = ""; return; }
+      timer = setTimeout(() => {
+        fetch("/spotify/ice/search?q=" + encodeURIComponent(q))
+          .then(r => r.json())
+          .then(data => {
+            results.innerHTML = "";
+            (data.results || []).forEach(t => {
+              const item = document.createElement("button");
+              item.type = "button";
+              item.className = "list-group-item list-group-item-action d-flex justify-content-between align-items-center";
+              item.innerHTML = `<span>${esc(t.name)} <span class="text-muted">— ${esc(t.artist)}</span>`
+                             + `<span class="text-muted small"> (${esc(t.album)})</span></span>`
+                             + (t.iced ? `<span class="badge bg-info text-dark">already iced</span>`
+                                       : `<span class="text-primary small">freeze →</span>`);
+              item.addEventListener("click", () => freeze(t, item));
+              results.appendChild(item);
+            });
+          });
+      }, 250);
+    });
+
+    function freeze(t, item) {
+      fetch("/spotify/ice/freeze", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          track_id: t.uri, name: t.name, artist: t.artist,
+          months: parseInt(monthsSel.value, 10) || 0,
+          reason: reasonIn.value.trim()
+        })
+      })
+      .then(r => r.json())
+      .then(data => { if (data.ok) location.reload(); });
+    }
+
+    // ---- Thaw: remove a track from the ice box ----
+    document.getElementById("iceBody")?.addEventListener("click", e => {
+      const btn = e.target.closest(".thaw-btn");
+      if (!btn) return;
+      const row = btn.closest("tr");
+      fetch("/spotify/ice/thaw", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({track_id: row.dataset.uri})
+      })
+      .then(r => r.json())
+      .then(data => { if (data.ok) row.remove(); });
+    });
+  </script>
+{% endblock %}

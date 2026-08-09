@@ -109,6 +109,7 @@
             </td>
             <td class="d-flex gap-1">
               <a href="/spotify/stats/{{ playlist.id }}" class="btn btn-outline-secondary btn-sm">Stats</a>
+              <a href="/spotify/stats/{{ playlist.id }}#tracks" class="btn btn-outline-info btn-sm" title="Freeze tracks in the ice box">🧊</a>
               {% if playlist.owner.id == user_id %}
                 <form method="POST" action="/spotify/toggle-visibility/{{ playlist.id }}">
                   <button type="submit" class="btn btn-sm {{ 'btn-outline-success' if playlist.public else 'btn-outline-secondary' }}">

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_ice.html" import snowflake %}
 
 {% block title %}Stats: {{ playlist.name }}{% endblock %}
 
@@ -61,6 +62,26 @@
     </div>
     {% endif %}
   </div>
+
+  {% if tracklist %}
+    <div id="tracks" class="mt-5" style="max-width: 760px;">
+      <div class="d-flex justify-content-between align-items-baseline mb-2">
+        <h5 class="mb-0">Tracks</h5>
+        <span class="text-muted small">🧊 freeze a track to keep it out of future builds</span>
+      </div>
+      <table class="table table-sm table-hover align-middle">
+        <tbody>
+          {% for t in tracklist %}
+            <tr>
+              <td class="text-muted small text-end" style="width: 2.5rem;">{{ loop.index }}</td>
+              <td>{{ t.name }}<span class="text-muted"> — {{ t.artist }}</span></td>
+              <td class="text-end" style="width: 6rem;">{{ snowflake(t.uri, t.name, t.artist, iced=t.iced, label='iced') }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
 
   <a href="javascript:history.back()" class="btn btn-outline-secondary mt-3">← Back</a>
 {% endblock %}

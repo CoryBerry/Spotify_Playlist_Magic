@@ -20,6 +20,7 @@
         <a class="nav-link {% if path.startswith('/spotify/sampler') or path == '/spotify/sample' %}active{% endif %}" href="/spotify/sampler">Sampler</a>
         <a class="nav-link {% if path.startswith('/spotify/text-import') %}active{% endif %}" href="/spotify/text-import">Text Import</a>
         <a class="nav-link {% if path == '/spotify/manage' %}active{% endif %}" href="/spotify/manage">Manage</a>
+        <a class="nav-link {% if path.startswith('/spotify/ice') %}active{% endif %}" href="/spotify/ice-box">🧊 Ice Box</a>
         {% if plex_enabled %}
           <span class="nav-link text-secondary" style="cursor:default; padding-left:4px; padding-right:4px;">|</span>
           <a class="nav-link text-info {% if path in ['/plex', '/plex/playlists', '/plex/build'] %}active{% endif %}" href="/plex/playlists">Plex Mix</a>
@@ -66,6 +67,39 @@
   {% endif %}
 
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+
+  <!-- Shared ice-box freeze: any .ice-freeze dropdown item (macro in _ice.html) posts
+       to /spotify/ice/freeze and flips its snowflake button to the "on ice" state. -->
+  <script>
+    document.addEventListener("click", function (e) {
+      const opt = e.target.closest(".ice-freeze");
+      if (!opt) return;
+      e.preventDefault();
+      const cell = opt.closest(".ice-cell");
+      if (!cell) return;
+      const months = parseInt(opt.dataset.months, 10) || 0;
+      fetch("/spotify/ice/freeze", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          track_id: cell.dataset.uri,
+          name:     cell.dataset.name,
+          artist:   cell.dataset.artist,
+          months:   months
+        })
+      })
+      .then(r => r.json())
+      .then(data => {
+        if (!data.ok) return;
+        const btn = cell.querySelector(".ice-btn");
+        btn.classList.remove("btn-outline-info");
+        btn.classList.add("btn-info");
+        const lbl = btn.querySelector(".ice-btn-label");
+        if (lbl) lbl.textContent = " " + (months ? months + "mo" : "never");
+      });
+    });
+  </script>
+
   {% block scripts %}{% endblock %}
 </body>
 </html>
