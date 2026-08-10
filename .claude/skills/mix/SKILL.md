@@ -92,6 +92,28 @@ genre clumps; give the mix a named shape (e.g. Slow Burn = ambient → indie →
 → landing; Cruise Control = one steady mid-tempo gear throughout). Write the chosen URIs
 (one per line) to a file in the scratchpad directory.
 
+At ~18–24 tracks you can hand-order by eye. **For a bigger pool or an explicit
+"ride ups and downs" / dynamic-arc request, use the `sequence` command** instead of
+re-deriving the arc math by hand (that's how the first big one burned a pile of iterations):
+
+```
+# input: one 'uri<TAB>energy[<TAB>artist[<TAB>name]]' line per track.
+# energy is YOUR taste call — 1=mellow, 2=mid, 3=banger (any integer scale).
+PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py sequence --tracks picks.txt > ordered.txt
+```
+
+It oscillates energy `--waves` times (default 3), eases in, and lands soft — the last
+`--landing` fraction (default 0.14) is a firm wind-down. `--max-run` de-clumps the
+transition shoulders (best-effort; a genuine peak/trough may sustain longer, which is
+fine — a run of bangers at the apex *is* an "up"). `--seed` makes the within-energy
+shuffle reproducible; `--uris-only` pipes straight into `create`. It prints an **energy
+sparkline to stderr** (`▄▄▄█▄▄███▄…▁▁▁`) — glance at it to confirm the shape before you
+ship, rather than reading 100 rows. Pure local logic, no Spotify calls.
+
+**Assigning energy is the one thing you can't automate** — Spotify killed `/audio-features`,
+so there's no danceability/energy to read. Tag each track yourself (artist/genre knowledge,
+or `roster --tags` for a Last.fm mood hint). The command owns the *arc*, you own the *taste*.
+
 ### 4. Save first, then review
 **Save the playlist immediately — don't wait for approval.** Cory prefers to react to a
 real, saved playlist rather than a proposal. Default is **private**, and record + cooldown
@@ -143,6 +165,32 @@ PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py ice thaw "Bad Girls"   # UR
 
 `ice add` reports the exact track it matched (name — artist) — read it back before trusting a
 name-based freeze; if it grabbed the wrong track, thaw it and re-add by URI.
+
+## Big "best of the year" mixes (multi-source, cross-referenced)
+
+A request like "best of 2025, ~100 songs, one per album, double the ones I played most"
+is a different animal from a vibe mix. It's an offline data job — merge sources, cross-
+reference a play-ranked list, pick per album, then `sequence`. Expect to **write a short
+script in the scratchpad and iterate by running it** (read the output, fix, rerun); this
+is data wrangling, not a one-shot prompt. Gotchas learned the hard way:
+
+- **Normalize albums before grouping.** Spotify fragments one album into many `album_id`s
+  — deluxe editions, pre-release singles, feat. variants all differ. Bucketing by raw
+  `album_id` inflates the album count and double-picks the same record. Group by
+  `(primary_artist, normalized_album_title)` — strip `(Deluxe)`/`(Extended)`/`(… Version)`
+  suffixes — and merge across your sources so each real album is one bucket.
+- **Re-check the ice box on your final picks — including boosted ones.** `roster`/`tracks`
+  exclude iced tracks, but if you're reading the `.mix_cache` JSON directly (as a big
+  cross-ref script does) you bypass that filter. Filter your picks against
+  `track_ice` (thaw_at NULL or future) yourself, *before* counting to 100, or Cory's
+  "overplayed" freezes leak back in. A boosted "played-most" album is exactly where an
+  iced hit hides — fall back to another cut from that album when its top track is frozen.
+- **The play-count overlap may be small — report it, don't force it.** Cross-referencing
+  a curated album list against "My Spotify Top 100" can match only a handful of albums
+  (the Top 100 skews to singles/other listening). That's a real finding worth stating
+  plainly, not a bug to engineer around.
+- **Energy tiers stay manual** (see step 3) — tag ~100 tracks by artist/genre knowledge,
+  then hand the file to `sequence`.
 
 ## Notes
 - Reversible: if the user dislikes a result, they can unfollow it, or use the app's

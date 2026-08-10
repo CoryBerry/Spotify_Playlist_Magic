@@ -30,6 +30,7 @@ Examples:
 """
 import argparse
 import json
+import math
 import os
 import random
 import sqlite3
@@ -320,6 +321,148 @@ def _annotate_tags(rows, lookup):
     return total - unknown, total, unknown
 
 
+# ---------------------------------------------------------------- arc sequencing
+# Turn a flat pool of already-curated tracks into an intentional "ride ups and
+# downs" running order. The taste part — how energetic each track is — stays with
+# the caller (Spotify killed /audio-features, so it can't be derived): each track
+# carries an integer `energy` level (e.g. 1=mellow, 2=mid, 3=banger). This code
+# only owns the *arc math*: an oscillating energy curve with an eased opening and
+# a firm soft-landing tail, mapped onto the real per-level supply so the counts
+# always work out, then filled avoiding adjacent same-artist clumps.
+#
+# It's rank-based: positions are sorted by the curve and the lowest-energy tracks
+# go to the lowest-curve positions, so the curve's absolute scale is irrelevant —
+# only its *shape* matters, and any set of energy levels maps on exactly.
+
+_SPARK_BLOCKS = "▁▂▃▄▅▆▇█"
+
+
+def _spark(values):
+    """Compact unicode sparkline of a numeric sequence, for a stderr eyeball."""
+    if not values:
+        return ""
+    lo, hi = min(values), max(values)
+    if hi == lo:
+        return _SPARK_BLOCKS[0] * len(values)
+    span = len(_SPARK_BLOCKS) - 1
+    return "".join(_SPARK_BLOCKS[int((v - lo) / (hi - lo) * span)] for v in values)
+
+
+def _arc_curve(n, waves, open_frac, land_frac):
+    """Per-position energy-shape values for an n-track arc.
+
+    `waves` full oscillations across the run; the first `open_frac` is capped so
+    the mix eases in rather than opening on a peak; the last `land_frac` is forced
+    into a strictly-descending tail (below the oscillation's trough) so those
+    positions reliably rank lowest and become the soft landing.
+    """
+    if n <= 1:
+        return [0.0] * n
+    land_start = 1.0 - land_frac
+    out = []
+    for i in range(n):
+        x = i / (n - 1)
+        o = math.sin(2 * math.pi * waves * x)
+        if x < open_frac:
+            o = min(o, 0.0)  # keep the opening off the peak
+        if x > land_start:
+            t = (x - land_start) / land_frac  # 0..1 across the tail
+            o = -1.0 - t                      # strictly descending -> lowest ranks
+        out.append(o)
+    return out
+
+
+def _break_runs(assign, max_run, body_end):
+    """De-clump runs longer than `max_run` in assign[:body_end] via local swaps.
+
+    Best-effort, not a hard cap: it only swaps with a *nearby* differently-tiered
+    slot, so it thins the shoulders where energies mingle but deliberately leaves
+    a genuine peak or trough intact — those broad plateaus are the arc's "ups and
+    downs," and breaking them would need to steal from far-away extrema and flatten
+    the whole shape. A pure reorder of the assignment, so per-level counts (and the
+    overall curve) are untouched. Bounded passes — never loops indefinitely. The
+    landing tail (assign[body_end:]) is exempt: a long mellow run there is the
+    intended wind-down.
+    """
+    if max_run <= 0:
+        return
+    for _ in range(3):
+        i = 0
+        while i < body_end:
+            j = i
+            while j + 1 < body_end and assign[j + 1] == assign[i]:
+                j += 1
+            if j - i + 1 > max_run:
+                target = None
+                for k in range(j + 1, min(body_end, j + 12)):
+                    if assign[k] != assign[i]:
+                        target = k
+                        break
+                if target is None:
+                    for k in range(i - 1, max(-1, i - 12), -1):
+                        if assign[k] != assign[i]:
+                            target = k
+                            break
+                if target is not None:
+                    assign[j], assign[target] = assign[target], assign[j]
+            i = j + 1
+
+
+def _sequence_arc(tracks, waves=3.0, open_frac=0.07, land_frac=0.14,
+                  max_run=3, avoid_window=2, seed=0):
+    """Order `tracks` (dicts with int `energy`, optional `artist`) into an arc.
+
+    Returns a new list, same items, reordered: energy oscillates `waves` times,
+    eases in, and lands soft; runs longer than `max_run` are de-clumped at the
+    transition shoulders (genuine peaks/troughs may still sustain — see
+    `_break_runs`); adjacent same-artist avoided within the last `avoid_window`
+    picks where supply allows. Deterministic for a given `seed`.
+    """
+    n = len(tracks)
+    if n == 0:
+        return []
+    levels = sorted({t["energy"] for t in tracks})
+    supply = {lvl: sum(1 for t in tracks if t["energy"] == lvl) for lvl in levels}
+
+    curve = _arc_curve(n, waves, open_frac, land_frac)
+    # rank positions low->high by curve; hand the lowest-energy level the
+    # lowest-curve positions, on up — an exact fit against real supply.
+    order = sorted(range(n), key=lambda i: curve[i])
+    assign = [None] * n
+    idx = 0
+    for lvl in levels:
+        for _ in range(supply[lvl]):
+            assign[order[idx]] = lvl
+            idx += 1
+
+    land_start = 1.0 - land_frac
+    body_end = next((i for i in range(n) if i / (n - 1) > land_start), n) if n > 1 else n
+    _break_runs(assign, max_run, body_end)
+
+    rng = random.Random(seed)
+    pools = {lvl: [t for t in tracks if t["energy"] == lvl] for lvl in levels}
+    for lvl in pools:
+        rng.shuffle(pools[lvl])
+
+    out, recent = [], []
+    for i in range(n):
+        pool = pools[assign[i]]
+        pick = None
+        for k, cand in enumerate(pool):
+            a = (cand.get("artist") or "").lower()
+            if not a or a not in recent:  # empty artist never counts as a clash
+                pick = pool.pop(k)
+                break
+        if pick is None:
+            pick = pool.pop(0)  # forced same-artist only if unavoidable
+        out.append(pick)
+        a = (pick.get("artist") or "").lower()
+        if avoid_window and a:
+            recent.append(a)
+            recent = recent[-avoid_window:]
+    return out
+
+
 # ---------------------------------------------------------------- commands
 
 def cmd_sources(args):
@@ -494,6 +637,59 @@ def cmd_roster(args):
         print(f"{t['pop']:>3}  {t['ice']:>5}  {t['uri']}  {t['name']} — {t['artist']}  ({t['album']}){tagstr}")
     print(f"# {len(rows)} candidates from {len(args.sources)} source(s); "
           f"mode={'top' if args.top else 'band'}, cooldown={cooldown_days}d", file=sys.stderr)
+
+
+def cmd_sequence(args):
+    """Reorder a curated pool into an energy arc — pure local logic, no Spotify.
+
+    Input lines: `uri<TAB>energy[<TAB>artist[<TAB>name]]` (blank / '#' lines
+    ignored). `energy` is your own integer level (e.g. 1=mellow, 2=mid, 3=banger)
+    — the one bit taste has to supply. Prints the same lines reordered into the
+    arc, plus an energy sparkline on stderr so you can eyeball the shape.
+    """
+    raw = (open(args.tracks, encoding="utf-8").read() if args.tracks
+           else sys.stdin.read()).splitlines()
+    tracks = []
+    for line in raw:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        parts = line.split("\t")
+        uri = parts[0].strip()
+        if not uri.startswith("spotify:track:"):
+            continue
+        if len(parts) < 2:
+            sys.exit(f"line missing an energy column: {line!r}")
+        try:
+            energy = int(float(parts[1]))
+        except ValueError:
+            sys.exit(f"bad energy {parts[1]!r} on line: {line!r}")
+        tracks.append({
+            "uri": uri,
+            "energy": energy,
+            "artist": parts[2].strip() if len(parts) > 2 else "",
+            "name": parts[3].strip() if len(parts) > 3 else "",
+        })
+    if not tracks:
+        sys.exit("No 'spotify:track:<TAB>energy' lines found on stdin or in --tracks.")
+
+    seq = _sequence_arc(tracks, waves=args.waves, land_frac=args.landing,
+                        max_run=args.max_run, seed=args.seed)
+
+    for t in seq:
+        if args.uris_only:
+            print(t["uri"])
+            continue
+        cols = [t["uri"], str(t["energy"])]
+        if t["artist"] or t["name"]:
+            cols.append(t["artist"])
+        if t["name"]:
+            cols.append(t["name"])
+        print("\t".join(cols))
+
+    levels = sorted({t["energy"] for t in tracks})
+    print(f"# {len(seq)} tracks · waves={args.waves:g} · landing={args.landing:g} · "
+          f"levels={levels}", file=sys.stderr)
+    print("# energy " + _spark([t["energy"] for t in seq]), file=sys.stderr)
 
 
 def cmd_create(args):
@@ -722,6 +918,18 @@ def main():
                          "(needs LASTFM_API_KEY)")
     ro.add_argument("--json", action="store_true")
     ro.set_defaults(func=cmd_roster)
+
+    q = sub.add_parser("sequence", help="order a curated pool into an energy arc (offline)")
+    q.add_argument("--tracks", help="file of 'uri<TAB>energy[<TAB>artist[<TAB>name]]' lines (else stdin)")
+    q.add_argument("--waves", type=float, default=3.0, help="number of energy peaks across the mix (default 3)")
+    q.add_argument("--landing", type=float, default=0.14,
+                   help="fraction of the tail reserved for a soft wind-down (default 0.14)")
+    q.add_argument("--max-run", type=int, default=3,
+                   help="de-clump body runs longer than this at transition shoulders "
+                        "(best-effort; true peaks/troughs may sustain; default 3)")
+    q.add_argument("--seed", type=int, default=0, help="seed for the within-level shuffle (reproducible)")
+    q.add_argument("--uris-only", action="store_true", help="print only URIs (pipe straight to create)")
+    q.set_defaults(func=cmd_sequence)
 
     c = sub.add_parser("create", help="create a private playlist from URIs")
     c.add_argument("--name", required=True)
