@@ -73,7 +73,8 @@ TrackIce          # manual never-list / timed freeze (thaw_at NULL=never); HARD 
 | `/spotify/text-import` | Text Import — paste/upload a text list of albums or tracks |
 | `/spotify/text-import/preview` | POST — parse text, search Spotify, Trust It or show manual review |
 | `/spotify/text-import/build` | POST — create playlist from manual-select form |
-| `/spotify/stats/<id>` | Track count, runtime, top artists, usage count, tracklist with per-track 🧊 freeze |
+| `/spotify/stats/<id>` | Track count, runtime, top artists, usage count, tracklist with per-track 🧊 freeze; Randomize (shuffle in place / shuffled copy) |
+| `/spotify/randomize` | POST — shuffle a playlist's order with a fresh OS-entropy seed; `mode=inplace` (owned only) or `mode=copy` (new `… : Shuffled` playlist) |
 | `/spotify/ice-box` | Ice Box — list frozen tracks (thaw date/"never") + freeze-a-track search |
 | `/spotify/ice/freeze` | POST JSON — freeze a track (never-list or timed); upserts on (track_id, provider) |
 | `/spotify/ice/thaw` | POST JSON — thaw (delete) a track from the ice box |

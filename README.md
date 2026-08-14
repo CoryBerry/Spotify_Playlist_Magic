@@ -36,6 +36,10 @@ Tag your playlists with free-form labels like "chill", "office", or "instrumenta
 
 See track count, total runtime, unique artist count, and a top-10 artist breakdown for any playlist. Also shows how many times it's been used in a Block Mix build, plus a full tracklist with a 🧊 snowflake on every row so you can freeze a track into the Ice Box without leaving the page.
 
+### 🔀 Randomize
+
+From any playlist's Stats page, shuffle the whole tracklist with a fresh OS-entropy random seed (surfaced in the confirmation so the shuffle is auditable). Two options: **Shuffle this playlist** reorders it in place (only for playlists you own), or **Create a shuffled copy** leaves the original alone and builds a new private `… : Shuffled` playlist. It's a pure reorder — nothing is added or removed, and cooldown / ice box / Block Mix knobs don't apply. _(Spotify only)_
+
 ### 🧊 Ice Box
 
 A manual, long-lived exclusion list — a **hard** never-list or a timed freeze — shared with the `mix` skill (both read and write the same `track_ice` table, so a freeze in either place is honored by the next build immediately). Unlike the automatic cooldown, an iced track *never* enters a build, even as a small-pool fallback.

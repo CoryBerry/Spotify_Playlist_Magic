@@ -8,6 +8,7 @@ from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import random
+import secrets
 import json
 import os
 import time
@@ -177,6 +178,28 @@ class TrackIce(db.Model):
     thaw_at   = db.Column(db.DateTime, nullable=True)  # NULL = never-list
     reason    = db.Column(db.String(300))
     __table_args__ = (db.UniqueConstraint("track_id", "provider"),)
+
+
+class FeedItem(db.Model):
+    """A line harvested from a watched blog + its Spotify match state — the review queue.
+
+    One row per (source, harvested line), keyed by item_hash so re-polling the same page
+    never re-queues a post. status walks pending -> added | rejected; both terminal states
+    are kept (not deleted) so a handled item stays out of future polls. matched_* is filled
+    when the resolver clears the confidence threshold; a miss is stored as status='miss'
+    with matched_uri NULL so the UI can show what didn't resolve.
+    """
+    id          = db.Column(db.Integer, primary_key=True)
+    source_id   = db.Column(db.String(50),  nullable=False)
+    source_name = db.Column(db.String(200), nullable=False)
+    raw_line    = db.Column(db.String(300), nullable=False)
+    item_hash   = db.Column(db.String(64),  nullable=False, unique=True)
+    matched_uri    = db.Column(db.String(200), nullable=True)
+    matched_name   = db.Column(db.String(300), nullable=True)
+    matched_artist = db.Column(db.String(300), nullable=True)
+    score       = db.Column(db.Float,   nullable=True)
+    status      = db.Column(db.String(20), nullable=False, default="pending")  # pending|added|rejected|miss
+    seen_at     = db.Column(db.DateTime, default=datetime.now)
 
 
 with app.app_context():
@@ -1495,7 +1518,7 @@ def spotify_stats(playlist_id):
     if not sp:
         return redirect(url_for("spotify_login"))
 
-    playlist = sp.playlist(playlist_id, fields="name,tracks.total")
+    playlist = sp.playlist(playlist_id, fields="name,tracks.total,owner.id")
 
     tracks  = []
     results = sp.playlist_tracks(playlist_id, fields="next,items(track(uri,name,duration_ms,artists(name)))")
@@ -1532,11 +1555,101 @@ def spotify_stats(playlist_id):
                  for t in tracks if t.get("uri")]
 
     user_id = sp.me()["id"]
+    owned   = playlist.get("owner", {}).get("id") == user_id
     return render_template("spotify_stats.html", playlist=playlist,
                            track_count=len(tracks), hours=hours, minutes=minutes,
                            unique_artists=len(artists), top_artists=top_artists,
                            use_count=use_count, build_sources=build_sources,
-                           user_id=user_id, tracklist=tracklist)
+                           user_id=user_id, tracklist=tracklist,
+                           playlist_id=playlist_id, owned=owned)
+
+
+@app.route("/spotify/randomize", methods=["POST"])
+def spotify_randomize():
+    """Shuffle an existing playlist's track order — in place, or into a new copy.
+
+    Uses a fresh OS-entropy seed (secrets.randbits) per shuffle, fed to a dedicated
+    Random instance, so the order is genuinely random and the seed is surfaced/auditable.
+    Ice box, cooldown and Block Mix knobs do NOT apply here — this is a pure reorder of
+    exactly the tracks already on the playlist, nothing added or removed.
+    """
+    sp = get_spotify_client()
+    if not sp:
+        return redirect(url_for("spotify_login"))
+
+    playlist_id = request.form.get("playlist_id", "").strip()
+    mode        = request.form.get("mode", "copy")
+    if not playlist_id:
+        return redirect(url_for("spotify_playlists"))
+
+    playlist = sp.playlist(playlist_id, fields="name,owner.id")
+
+    # Fetch every track URI in current order. Local files carry spotify:local: URIs the
+    # Web API can't re-add, so we track them separately to avoid silently dropping tracks.
+    uris     = []
+    n_local  = 0
+    results  = sp.playlist_tracks(playlist_id, fields="next,items(track(uri,is_local))")
+    while results:
+        for item in results["items"]:
+            tr = item.get("track")
+            if not tr or not tr.get("uri"):
+                continue
+            if tr.get("is_local"):
+                n_local += 1
+                continue
+            uris.append(tr["uri"])
+        results = sp.next(results) if results["next"] else None
+
+    if not uris:
+        flash("Nothing to shuffle — no Spotify tracks on that playlist.", "warning")
+        return redirect(url_for("spotify_stats", playlist_id=playlist_id))
+
+    # Real random seed from OS entropy → deterministic Random instance for the shuffle.
+    seed = secrets.randbits(64)
+    random.Random(seed).shuffle(uris)
+
+    user_id = sp.me()["id"]
+    owned   = playlist.get("owner", {}).get("id") == user_id
+
+    if mode == "inplace":
+        if not owned:
+            flash("You can only shuffle a playlist in place if you own it — "
+                  "make a shuffled copy instead.", "warning")
+            return redirect(url_for("spotify_stats", playlist_id=playlist_id))
+        if n_local:
+            flash(f"“{playlist['name']}” has {n_local} local file(s) the API can't re-add, "
+                  "so an in-place shuffle would drop them. Make a shuffled copy instead.", "warning")
+            return redirect(url_for("spotify_stats", playlist_id=playlist_id))
+        # Replace wipes the playlist to the first 100, then append the rest in batches of 100.
+        sp.playlist_replace_items(playlist_id, uris[:100])
+        for i in range(100, len(uris), 100):
+            sp.playlist_add_items(playlist_id, uris[i:i + 100])
+        flash(f"🔀 Shuffled {len(uris)} track(s) in “{playlist['name']}” (seed {seed}).", "success")
+        return redirect(url_for("spotify_stats", playlist_id=playlist_id))
+
+    # mode == "copy" — build a fresh private playlist holding the shuffled order.
+    t0           = time.time()
+    new_name     = f"{playlist['name']} : Shuffled : {_date_label()}"
+    new_playlist = sp.user_playlist_create(user_id, new_name, public=False)
+    for i in range(0, len(uris), 100):
+        sp.playlist_add_items(new_playlist["id"], uris[i:i + 100])
+
+    cp = CreatedPlaylist(
+        playlist_id=new_playlist["id"],
+        name=new_playlist["name"],
+        tool="Randomize",
+        provider="spotify",
+        url=new_playlist["external_urls"]["spotify"],
+        gen_seconds=round(time.time() - t0, 1),
+        track_count=len(uris),
+    )
+    db.session.add(cp)
+    db.session.commit()
+
+    note = f" ({n_local} local file(s) skipped)" if n_local else ""
+    flash(f"🔀 Created “{new_playlist['name']}” — {len(uris)} track(s) shuffled "
+          f"(seed {seed}){note}.", "success")
+    return redirect(url_for("spotify_stats", playlist_id=new_playlist["id"]))
 
 
 @app.route("/spotify/stats")
@@ -1758,6 +1871,146 @@ def text_import_build():
 
     return render_template("spotify_done.html", playlist=new_playlist,
                            track_count=len(track_uris), unmatched=0)
+
+
+# ---------------------------------------------------------------
+# Routes — Feed Radar (prototype)
+#   Watch a blog -> harvest "Artist - Title" lines via Firecrawl -> resolve to Spotify
+#   with the shared Text-Import resolver -> hold matches in a review queue -> approve
+#   into a playlist. See feed_service.py.
+# ---------------------------------------------------------------
+
+import feed_service
+from spotify_service import resolve_tracks
+
+
+@app.route("/spotify/feed")
+def feed_radar():
+    sp = get_spotify_client()
+    if not sp:
+        return redirect(url_for("spotify_login"))
+    user_id = sp.me()["id"]
+    playlists, _, _ = get_cached_playlists(sp, user_id)
+    pending = FeedItem.query.filter_by(status="pending").order_by(FeedItem.seen_at.desc()).all()
+    misses  = FeedItem.query.filter_by(status="miss").order_by(FeedItem.seen_at.desc()).limit(20).all()
+    return render_template(
+        "spotify_feed.html",
+        sources=feed_service.FEED_SOURCES,
+        pending=pending,
+        misses=misses,
+        playlists=playlists,
+    )
+
+
+@app.route("/spotify/feed/poll", methods=["POST"])
+def feed_poll():
+    sp = get_spotify_client()
+    if not sp:
+        return redirect(url_for("spotify_login"))
+
+    source = feed_service.get_source(request.form.get("source_id", ""))
+    if not source:
+        flash("Unknown feed source.", "danger")
+        return redirect(url_for("feed_radar"))
+
+    # 1. Scrape + extract via Firecrawl, per the source's mode (regex anchors, or the
+    #    slower layout-agnostic LLM extraction). The one step that needs `firecrawl login`.
+    try:
+        lines = feed_service.harvest(source)
+    except feed_service.FeedFetchError as e:
+        flash(str(e), "warning")
+        return redirect(url_for("feed_radar"))
+
+    # 2. Drop any lines we've already harvested from this source (dedup by hash).
+    fresh = []
+    for line in lines:
+        h = feed_service.item_hash(source["id"], line)
+        if not FeedItem.query.filter_by(item_hash=h).first():
+            fresh.append((line, h))
+
+    if not fresh:
+        flash(f"{source['name']}: nothing new (scanned {len(lines)} lines).", "info")
+        return redirect(url_for("feed_radar"))
+
+    # 3. Resolve to Spotify with the same resolver Text Import uses. Hits land as pending
+    #    (minus anything on ice), low-confidence/no-match land as 'miss' for visibility.
+    resolved, missed = resolve_tracks(sp, [line for line, _ in fresh])
+    by_line = {r["line"]: r for r in resolved}
+    iced    = iced_ids("spotify")
+
+    n_new = n_miss = 0
+    for line, h in fresh:
+        r = by_line.get(line)
+        if r and r["uri"] not in iced:
+            db.session.add(FeedItem(
+                source_id=source["id"], source_name=source["name"],
+                raw_line=line, item_hash=h,
+                matched_uri=r["uri"], matched_name=r["name"],
+                matched_artist=r["artist"], score=r["score"], status="pending",
+            ))
+            n_new += 1
+        else:
+            db.session.add(FeedItem(
+                source_id=source["id"], source_name=source["name"],
+                raw_line=line, item_hash=h, status="miss",
+            ))
+            n_miss += 1
+    db.session.commit()
+
+    flash(f"{source['name']}: {n_new} new match{'es' if n_new != 1 else ''} queued, "
+          f"{n_miss} unresolved.", "success")
+    return redirect(url_for("feed_radar"))
+
+
+@app.route("/spotify/feed/resolve", methods=["POST"])
+def feed_resolve():
+    """Bulk-handle the review queue: add selected matches to a playlist, or reject them."""
+    sp = get_spotify_client()
+    if not sp:
+        return redirect(url_for("spotify_login"))
+
+    action   = request.form.get("action", "")
+    item_ids = [int(i) for i in request.form.getlist("item_id") if i.isdigit()]
+    items    = FeedItem.query.filter(FeedItem.id.in_(item_ids), FeedItem.status == "pending").all()
+
+    if not items:
+        flash("Nothing selected.", "info")
+        return redirect(url_for("feed_radar"))
+
+    if action == "reject":
+        for it in items:
+            it.status = "rejected"
+        db.session.commit()
+        flash(f"Rejected {len(items)} item{'s' if len(items) != 1 else ''}.", "info")
+        return redirect(url_for("feed_radar"))
+
+    # action == "add": push matched URIs into the chosen playlist, honoring the ice box.
+    target = request.form.get("target_playlist_id", "").strip()
+    if not target:
+        flash("Pick a target playlist first.", "warning")
+        return redirect(url_for("feed_radar"))
+
+    iced = iced_ids("spotify")
+    uris = [it.matched_uri for it in items if it.matched_uri and it.matched_uri not in iced]
+    seen = set()
+    uris = [u for u in uris if not (u in seen or seen.add(u))]
+
+    if not uris:
+        flash("All selected tracks are on ice — nothing added.", "warning")
+        return redirect(url_for("feed_radar"))
+
+    for i in range(0, len(uris), 100):
+        sp.playlist_add_items(target, uris[i:i + 100])
+    _record_usage([target], "spotify")
+
+    for it in items:
+        it.status = "added"
+    db.session.commit()
+
+    playlist_obj = sp.playlist(target, fields="name,external_urls")
+    flash(f"Added {len(uris)} track{'s' if len(uris) != 1 else ''} to "
+          f"{playlist_obj['name']}.", "success")
+    return redirect(url_for("feed_radar"))
 
 
 # ---------------------------------------------------------------
