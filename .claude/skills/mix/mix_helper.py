@@ -10,7 +10,8 @@ dance by hand:
     tracks    dump real tracks (uri / name / artist) from one or more sources,
               optionally excluding tracks still inside the app's cooldown window
     create    create a private playlist from a list of URIs, optionally recording
-              it to the app's DB (CreatedPlaylist + TrackHistory) like a real build
+              it to the app's DB (CreatedPlaylist + TrackHistory + PlaylistUsage for
+              each --source) like a real build
 
 Auth reuses the same Spotipy `.cache` token the Flask app writes, so no browser
 login is needed as long as a valid token exists. Reads are always safe; `create`
@@ -26,7 +27,7 @@ Examples:
     python mix_helper.py sources --tag selects
     python mix_helper.py tracks "Cory's Chilled Playlist" 43M34ZEoIBEMbe9SDA1atB --exclude-cooldown
     python mix_helper.py roster "90s Albums" --tags
-    python mix_helper.py create --name "Sunday Slow Burn" --desc "..." --uris-file picks.txt --record --cooldown
+    python mix_helper.py create --name "Sunday Slow Burn" --desc "..." --uris-file picks.txt --record --cooldown --source "Chill Albums" --source "90s Albums"
 """
 import argparse
 import json
@@ -692,7 +693,42 @@ def cmd_sequence(args):
     print("# energy " + _spark([t["energy"] for t in seq]), file=sys.stderr)
 
 
+def _resolve_sources(source_tokens):
+    """Resolve --source tokens (id or name substring) to playlist ids, order-preserving.
+
+    Resolved up front (before any Spotify write) so a typo aborts cleanly instead of
+    leaving a created playlist with no usage recorded.
+    """
+    pls = _cached_playlists()
+    by_id = {p["id"]: p["name"] for p in pls}
+    by_name = {p["name"]: p["id"] for p in pls}
+    ids = [_resolve(s, by_id, by_name)[1] for s in source_tokens]
+    return list(dict.fromkeys(ids))
+
+
+def _record_source_usage(db, source_ids, provider="spotify"):
+    """Bump playlist_usage for each source playlist — identical semantics to the web
+    app's _record_usage: an existing row's use_count += 1, a new row starts at 1.
+
+    This makes a mix build count toward a source's "most used" rank exactly like a
+    Block Mix / Album Blast build does — the very signal `sources`/`roster` rank on.
+    Without it the skill was blind to its own builds (a source used by 5 mixes still
+    read 1×). Upsert leans on the table's UNIQUE(playlist_id, provider) constraint.
+    """
+    now = datetime.now().isoformat(sep=" ")
+    for pid in source_ids:
+        db.execute(
+            "INSERT INTO playlist_usage (playlist_id, provider, use_count, last_used) "
+            "VALUES (?, ?, 1, ?) "
+            "ON CONFLICT(playlist_id, provider) DO UPDATE SET "
+            "use_count = use_count + 1, last_used = excluded.last_used",
+            (pid, provider, now),
+        )
+    db.commit()
+
+
 def cmd_create(args):
+    source_ids = _resolve_sources(args.source) if args.source else []
     if args.uris_file:
         with open(args.uris_file, encoding="utf-8") as fh:
             raw = fh.read().split()
@@ -734,12 +770,16 @@ def cmd_create(args):
                 "INSERT INTO track_history (track_id, provider, used_at) VALUES (?, 'spotify', ?)",
                 [(u, now) for u in uris],
             )
+        if source_ids:
+            _record_source_usage(db, source_ids)
         db.commit()
         extra = " + cooldown" if args.cooldown else ""
-        print(f"recorded to created_playlist{extra}")
+        usage = f" + usage×{len(source_ids)}" if source_ids else ""
+        print(f"recorded to created_playlist{extra}{usage}")
 
 
 def cmd_replace(args):
+    source_ids = _resolve_sources(args.source) if args.source else []
     """Replace all tracks in an existing playlist in place (keeps the same URL)."""
     if args.uris_file:
         with open(args.uris_file, encoding="utf-8") as fh:
@@ -787,9 +827,12 @@ def cmd_replace(args):
                 "INSERT INTO track_history (track_id, provider, used_at) VALUES (?, 'spotify', ?)",
                 [(u, now) for u in uris],
             )
+        if source_ids:
+            _record_source_usage(db, source_ids)
         db.commit()
         extra = " + cooldown" if args.cooldown else ""
-        print(f"updated created_playlist{extra}")
+        usage = f" + usage×{len(source_ids)}" if source_ids else ""
+        print(f"updated created_playlist{extra}{usage}")
 
 
 def _extract_track_uri(tok):
@@ -940,6 +983,9 @@ def main():
                    help="log to created_playlist (shows in Recently Created)")
     c.add_argument("--cooldown", action="store_true",
                    help="with --record, also write tracks to track_history")
+    c.add_argument("--source", action="append", metavar="PLAYLIST",
+                   help="a source playlist (id or name substring) this mix drew from; "
+                        "with --record, bumps its use_count like a web build. Repeatable.")
     c.set_defaults(func=cmd_create)
 
     r = sub.add_parser("replace", help="replace all tracks in an existing playlist in place")
@@ -951,6 +997,9 @@ def main():
                    help="update the created_playlist row (or insert if missing)")
     r.add_argument("--cooldown", action="store_true",
                    help="with --record, also write tracks to track_history")
+    r.add_argument("--source", action="append", metavar="PLAYLIST",
+                   help="a source playlist (id or name substring) this mix drew from; "
+                        "with --record, bumps its use_count like a web build. Repeatable.")
     r.set_defaults(func=cmd_replace)
 
     i = sub.add_parser("ice", help="manual ice box: never-list / timed freeze, shared with the app")

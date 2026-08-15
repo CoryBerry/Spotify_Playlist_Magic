@@ -122,8 +122,17 @@ so it behaves like a real build:
 ```
 PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py create \
   --name "Sunday Slow Burn" --desc "Chill arc, built from Cory's chill sources" \
-  --uris-file /path/to/picks.txt --record --cooldown
+  --uris-file /path/to/picks.txt --record --cooldown \
+  --source "Chill Albums" --source "90s Albums" --source "Folk Selects"
 ```
+
+**Always pass a `--source` for every playlist you drew from.** With `--record` this
+bumps each source's `use_count` in `playlist_usage` — the *same* table and the *same*
++1-per-build semantics as a web Block Mix / Album Blast build. Without it the skill is
+blind to its own builds: a fresh source you've leaned on for five mixes still reads as
+`1×` in `sources`/`roster`, and step 1 would wrongly flag it as low-signal. Pass the same
+source tokens (id or name substring) you used in `roster`/`tracks`; they resolve up front,
+so a typo aborts before anything is created.
 
 Then, in your reply: share the URL, **show the full tracklist exactly as curated (grouped
 by section with your design notes)**, and **ask if there are any changes** — swap tracks,
@@ -135,6 +144,8 @@ remove), so saving first costs nothing and gives Cory something real to react to
 - `--cooldown` (with `--record`) writes the tracks to `track_history` so future Block Mix /
   Sampler builds won't immediately replay them. Use it when the mix should participate in the
   cooldown pool; omit it for a one-off you don't mind repeating.
+- `--source PLAYLIST` (repeatable, with `--record`) counts this build toward each source's
+  `use_count` — the "most used" signal step 1 leans on. Pass one per source you pulled from.
 
 The helper prints the playlist URL — share it back to the user.
 
