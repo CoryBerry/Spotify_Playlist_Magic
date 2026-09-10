@@ -9,3 +9,20 @@ instance/
 IDEAS.md
 TODO.md
 scratch/
+
+# Per-friend taste-profile pulls (profile skill) — regenerable, not source
+.profile_cache/
+
+# Scratch output from mix / profile skill runs — regenerable dumps, not source.
+# Root-anchored on purpose so these never hide a real file in a subdirectory.
+/*.err
+/err*.txt
+/seqerr.txt
+/r[0-9]*.json
+/rr.json
+/rcs.json
+/roster*.txt
+/sources.txt
+/picks.txt
+/ordered.txt
+/uris.txt
