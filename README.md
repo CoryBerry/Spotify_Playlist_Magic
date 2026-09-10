@@ -28,6 +28,10 @@ Browse all your playlists in a filterable, sortable table. Preview tracks, toggl
 
 Paste a plain-text list of albums or tracks — one per line — and the app builds a Spotify playlist from it. Works great with LLM-generated suggestions. Supports `Artist - Album` and `Artist - Track` formats (auto-detected). Two modes: **Trust It** creates the playlist immediately using the best Spotify match per line, or **Manual Select** shows the top candidates for each line so you can correct any mismatches before creating. _(Spotify only)_
 
+### 📡 Feed Radar
+
+Watch your favorite music blogs and let the app surface new tracks for you. Point it at a source (Gorilla vs. Bear, Pitchfork Best New Tracks, Line of Best Fit), hit **Check now**, and it scrapes the page, pulls out every `Artist – Title` mention, and matches each against Spotify using the same resolver as Text Import. Confident matches land in a review queue with a match-confidence score; you tick the ones you want and add them to any playlist in one click. Anything on ice is skipped automatically, and lines that didn't resolve are shown separately so nothing silently vanishes. Fast sources use a lightweight regex; trickier layouts use AI extraction (slower, but reads any page). Requires the Firecrawl CLI (see setup below). _(Spotify only, prototype)_
+
 ### 🏷️ Playlist Tags
 
 Tag your playlists with free-form labels like "chill", "office", or "instrumental". Tags appear in Block Mix as filter buttons so you can quickly narrow down to the right vibe without hunting through hundreds of playlists. _(Spotify only)_
@@ -62,12 +66,34 @@ Configure the track cooldown window (default: 7 days) and how many times a track
 
 ### 1. Clone and install dependencies
 
+Requires **Python 3.9 or newer** (developed and tested on 3.12), with `python` and `pip`
+available on your PATH.
+
 ```bash
 git clone https://github.com/CoryBerry/Spotify_Playlist_Magic.git
-go to the "Spotify_Playlist_Magic" folder or where you installed it
-pip install -r requirements.txt
-     - You must have Python installed and properly pathed.
+cd Spotify_Playlist_Magic
 ```
+
+A virtual environment is optional but recommended, so the app's packages stay out of your
+system Python:
+
+```bash
+python -m venv .venv
+
+# Windows (PowerShell)
+.venv\Scripts\Activate.ps1
+
+# macOS / Linux
+source .venv/bin/activate
+```
+
+Then install the dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+This also installs `plexapi`, so the optional Plex tools work with no extra step.
 
 ### 2. Create a Spotify Developer app
 
@@ -91,6 +117,10 @@ SPOTIFY_REDIRECT_URI=http://127.0.0.1:5000/callback
 SECRET_KEY=any_random_string
 ```
 
+> **Plex note:** `PLEX_URL` and `PLEX_TOKEN` come commented out in the example file — leave
+> them that way unless you actually run Plex. The app treats *any* non-empty value as "Plex is
+> configured", so a leftover placeholder gives you Plex nav links that lead nowhere.
+
 ### 4. Run the app
 
 ```bash
@@ -105,17 +135,13 @@ Open [http://127.0.0.1:5000](http://127.0.0.1:5000) and connect your Spotify acc
 
 If you run a local Plex Media Server, Block Mix and Album Blaster also work with your Plex music library — no Spotify account needed for that half.
 
-### 1. Install the Plex dependency
-
-```bash
-pip install plexapi
-```
-
-### 2. Get your Plex token
+### 1. Get your Plex token
 
 Open Plex in a browser, play any item, and open the browser dev tools → Network tab. Look at any request URL — it will contain `X-Plex-Token=...`. Copy that value.
 
-### 3. Add Plex to your `.env`
+### 2. Add Plex to your `.env`
+
+Uncomment the two Plex lines (drop the leading `#`) and fill in your token:
 
 ```
 PLEX_URL=http://localhost:32400
@@ -123,6 +149,26 @@ PLEX_TOKEN=your_plex_token
 ```
 
 The Plex section of the nav will appear automatically once both values are set. If they're missing, the Plex links redirect to a "not configured" page instead of erroring.
+
+---
+
+## Feed Radar Setup (optional)
+
+The **📡 Feed Radar** tool scrapes music blogs through the [Firecrawl](https://www.firecrawl.dev/) CLI, so that half of the app only works once Firecrawl is installed and logged in.
+
+### 1. Install the Firecrawl CLI
+
+```bash
+npm install -g firecrawl-cli
+```
+
+### 2. Log in once
+
+```bash
+firecrawl login
+```
+
+The app reuses this login — no API key goes in `.env`. If Firecrawl isn't installed or authenticated, the rest of the app is unaffected; Feed Radar just shows a clear "run `firecrawl login`" message when you hit **Check now**. Note that the AI-extraction sources take ~2 minutes and cost more Firecrawl credits per check than the fast regex sources.
 
 ---
 

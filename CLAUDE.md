@@ -23,16 +23,25 @@ A Flask web app for building and managing Spotify and Plex playlists in ways the
 ## App structure
 
 ```
-app.py              ← all routes, models, helpers
+app.py              ← Flask routes, models, and web-specific helpers
+spotify_service.py  ← Spotify search/matching (_name_sim, _search_line) + resolve_tracks /
+                      create_playlist_from_lines — one source of truth, shared with the CLI
+feed_service.py     ← Feed Radar: Firecrawl scrape + "Artist – Title" extraction (pure, unit-tested)
+lastfm_service.py   ← Last.fm per-artist tag lookups (used by the mix skill's roster --tags)
+cli.py              ← headless, prompt-free CLI (login / resolve / build) over spotify_service
 templates/
   base.html         ← shared layout (Bootstrap, nav, cache footer)
-  spotify_*.html    ← Spotify tool pages
+  spotify_*.html    ← Spotify tool pages (incl. spotify_feed.html — Feed Radar)
   plex_*.html       ← Plex tool pages
   recently_created.html
 instance/
   spotify_tools.db  ← SQLite DB (auto-created, don't commit)
 IDEAS.md            ← feature backlog
 ```
+
+> **Note:** `app.py` is no longer the sole home for logic — search/matching and resolver
+> code now live in `spotify_service.py` so the web app and `cli.py` share one implementation.
+> Feed Radar's scrape/extract logic lives in `feed_service.py`.
 
 > **Note:** `README.md` is the source of truth for user-facing feature descriptions. CLAUDE.md may drift — cross-check README when in doubt, and keep both in sync when making structural changes.
 
@@ -47,6 +56,10 @@ CreatedPlaylist   # history of every Block Mix / Album Blast created (alive/chec
 PlaylistUsage     # use_count + last_used per playlist+provider — drives "most used" sort
 TrackHistory      # track_id + used_at — 7-day cooldown pool to avoid replaying recent tracks
 TrackIce          # manual never-list / timed freeze (thaw_at NULL=never); HARD exclusion honored by every build + the mix skill
+BuildSource       # source playlists of a Block Mix build, in cycle order (name/owner/position/weight); FK → CreatedPlaylist
+ThawTally         # monthly count of tracks thawed from cooldown, per (year, month, provider)
+AppSettings       # user-tunable cooldown_days (default 7) + cooldown_max_plays (default 2); driven by /settings
+FeedItem          # Feed Radar review queue: one row per (source, harvested line), keyed by item_hash; status pending|added|rejected|miss
 ```
 
 ---
@@ -73,16 +86,24 @@ TrackIce          # manual never-list / timed freeze (thaw_at NULL=never); HARD 
 | `/spotify/text-import` | Text Import — paste/upload a text list of albums or tracks |
 | `/spotify/text-import/preview` | POST — parse text, search Spotify, Trust It or show manual review |
 | `/spotify/text-import/build` | POST — create playlist from manual-select form |
+| `/spotify/stats` | Playlist picker — choose a playlist to view its stats |
 | `/spotify/stats/<id>` | Track count, runtime, top artists, usage count, tracklist with per-track 🧊 freeze; Randomize (shuffle in place / shuffled copy) |
 | `/spotify/randomize` | POST — shuffle a playlist's order with a fresh OS-entropy seed; `mode=inplace` (owned only) or `mode=copy` (new `… : Shuffled` playlist) |
 | `/spotify/ice-box` | Ice Box — list frozen tracks (thaw date/"never") + freeze-a-track search |
 | `/spotify/ice/freeze` | POST JSON — freeze a track (never-list or timed); upserts on (track_id, provider) |
 | `/spotify/ice/thaw` | POST JSON — thaw (delete) a track from the ice box |
 | `/spotify/ice/search` | GET JSON — Spotify track search for the freeze-a-track box |
+| `/spotify/feed` | Feed Radar — watched blog sources + review queue of matched `Artist – Title` lines |
+| `/spotify/feed/poll` | POST — scrape a source via Firecrawl, extract lines, resolve to Spotify, queue hits (minus iced) as `pending`, misses as `miss` |
+| `/spotify/feed/resolve` | POST — bulk add selected queue items to a playlist (honors ice box) or reject them |
 | `/spotify/cache/refresh` | Force invalidate playlist cache |
 | `/recently-created` | History of created playlists with alive/deleted status |
-| `/recently-created/remove/<id>` | POST — delete from provider + remove from history |
+| `/recently-created/scan` | POST — re-check which created playlists are still alive on the provider |
+| `/recently-created/delete/<id>` | POST — unfollow/delete on the provider + mark the history row dead (keeps it) |
+| `/recently-created/remove/<id>` | POST — remove the history row from the DB only (no provider call) |
 | `/recently-created/clear-dead` | POST — purge dead entries from DB |
+| `/settings` | GET/POST — tune cooldown window (days) and max plays before a track ices |
+| `/settings/thaw-all` | POST — clear all `TrackHistory`, freeing every cooldown track |
 | `/plex/playlists` | Plex Block Mix |
 | `/plex/build` | POST — executes Plex Block Mix build |
 | `/plex/album-blaster` | Plex Album Blaster — browse playlists |
@@ -111,7 +132,9 @@ TrackIce          # manual never-list / timed freeze (thaw_at NULL=never); HARD 
 
 **Cache fallback:** `get_cached_playlists()` serves stale DB cache on `SpotifyException` or timeout rather than showing an error page.
 
-**Text Import matching:** `_search_line()` searches tracks (limit=5) and albums (limit=3) separately, scores each result by word-overlap similarity (`_name_sim`) against the query title, and returns candidates sorted by score. `_detect_list_type()` votes across all lines to determine whether the list is track-dominant, album-dominant, or mixed (≥60% threshold). `_bias_matches()` re-sorts each row so the dominant type leads — preventing LLM-generated track lists from expanding into full albums.
+**Text Import matching:** `_search_line()` searches tracks (limit=5) and albums (limit=3) separately, scores each result by word-overlap similarity (`_name_sim`) against the query title, and returns candidates sorted by score. `_detect_list_type()` votes across all lines to determine whether the list is track-dominant, album-dominant, or mixed (≥60% threshold). `_bias_matches()` re-sorts each row so the dominant type leads — preventing LLM-generated track lists from expanding into full albums. `_search_line` / `_name_sim` now live in `spotify_service.py` (shared with `cli.py`) and are imported back into `app.py`.
+
+**Feed Radar (`feed_service.py` + `FeedItem`):** watch a music blog, harvest new `Artist – Title` mentions, and hold Spotify matches in a review queue until you approve them into a playlist. `feed_service` keeps two responsibilities apart: fetch (side-effecting, shells out to the `firecrawl` CLI so it reuses `firecrawl login` — no API key threaded through Flask) and extract (pure, unit-tested in `test_feed_service.py`). Each source declares an extraction `mode`: `"anchors"` (cheap regex over markdown link anchors) or `"llm"` (Firecrawl structured extraction with a schema — slower/pricier but layout-agnostic). `/spotify/feed/poll` harvests → dedupes by `item_hash` (stable per source+line, so re-polling never re-queues) → runs the lines through `resolve_tracks()` (the *same* resolver as Text Import) → queues hits as `status="pending"` (dropping anything in `iced_ids("spotify")`) and non-matches as `status="miss"` for transparency. `/spotify/feed/resolve` bulk-adds selected pending items to a chosen playlist (re-checking the ice box at add time) or rejects them; handled items stay in the DB as `added`/`rejected` so they never re-queue. Sources are hardcoded for the prototype (`FEED_SOURCES`); a real version would store them in a table.
 
 ---
 

@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+
+{% block title %}Feed Radar{% endblock %}
+
+{% block content %}
+  <div class="d-flex justify-content-between align-items-baseline mb-2">
+    <h2 class="mb-0">📡 Feed Radar <span class="text-muted fs-6">{{ pending|length }} awaiting review</span></h2>
+  </div>
+  <p class="text-muted small">
+    Scrape a watched blog with Firecrawl, match new <code>Artist – Title</code> mentions
+    against Spotify, and hold the hits here until you approve them into a playlist.
+    Matching reuses the Text Import resolver; approvals honor the 🧊 Ice Box.
+    <em>Prototype — one hardcoded source, manual poll.</em>
+  </p>
+
+  <!-- Sources -->
+  <div class="card mb-4">
+    <div class="card-body">
+      <h5 class="card-title">Watched sources</h5>
+      {% for s in sources %}
+        <form method="post" action="/spotify/feed/poll" class="d-flex align-items-center gap-2 mb-1">
+          <input type="hidden" name="source_id" value="{{ s.id }}">
+          <button class="btn btn-sm btn-outline-primary" type="submit">Check now</button>
+          <span>{{ s.name }}</span>
+          {% if s.mode == 'llm' %}
+            <span class="badge bg-info text-dark" title="AI extraction — layout-agnostic, but ~2 min per check">🤖 AI · slower</span>
+          {% else %}
+            <span class="badge bg-secondary" title="Fast regex extraction">⚡ fast</span>
+          {% endif %}
+          <a href="{{ s.url }}" target="_blank" class="text-muted small text-decoration-none">{{ s.url }}</a>
+        </form>
+      {% endfor %}
+      <p class="text-muted small mb-0 mt-2">
+        🤖 AI sources use Firecrawl structured extraction — they read any layout but take
+        ~2 minutes and cost more credits per check, so the page will spin while it works.
+      </p>
+    </div>
+  </div>
+
+  <!-- Review queue -->
+  {% if pending %}
+    <form method="post" action="/spotify/feed/resolve">
+      <div class="card mb-4">
+        <div class="card-body">
+          <div class="row g-2 align-items-center mb-3">
+            <div class="col-auto"><strong>Add selected to</strong></div>
+            <div class="col-md-5">
+              <select name="target_playlist_id" class="form-select">
+                <option value="">Choose a playlist…</option>
+                {% for p in playlists %}
+                  <option value="{{ p.id }}">{{ p.name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-auto">
+              <button class="btn btn-success" type="submit" name="action" value="add">✓ Add selected</button>
+              <button class="btn btn-outline-secondary" type="submit" name="action" value="reject">✕ Reject selected</button>
+            </div>
+          </div>
+
+          <table class="table table-hover align-middle mb-0">
+            <thead class="table-dark">
+              <tr>
+                <th style="width:2.5rem;"><input type="checkbox" id="checkAll" class="form-check-input"></th>
+                <th>Matched track</th>
+                <th>From blog</th>
+                <th>Source</th>
+                <th style="width:5rem;">Score</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for it in pending %}
+                <tr>
+                  <td><input type="checkbox" name="item_id" value="{{ it.id }}" class="form-check-input row-check" checked></td>
+                  <td>
+                    <a href="https://open.spotify.com/track/{{ it.matched_uri.split(':')[-1] }}"
+                       target="_blank" class="text-decoration-none">
+                      {{ it.matched_name }}<span class="text-muted"> — {{ it.matched_artist }}</span>
+                    </a>
+                  </td>
+                  <td class="text-muted small">{{ it.raw_line }}</td>
+                  <td class="text-muted small">{{ it.source_name }}</td>
+                  <td>
+                    {% set pct = (it.score * 100)|round|int if it.score is not none else 0 %}
+                    <span class="badge {{ 'bg-success' if pct >= 85 else 'bg-secondary' }}">{{ pct }}%</span>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </form>
+  {% else %}
+    <p class="text-muted">Nothing in the queue. Hit <strong>Check now</strong> above to scan a source.</p>
+  {% endif %}
+
+  <!-- Recent misses (transparency: what didn't resolve) -->
+  {% if misses %}
+    <details class="mb-4">
+      <summary class="text-muted small">Recent unresolved lines ({{ misses|length }}) — scraped but no confident Spotify match</summary>
+      <ul class="text-muted small mt-2">
+        {% for m in misses %}<li>{{ m.raw_line }} <span class="opacity-50">· {{ m.source_name }}</span></li>{% endfor %}
+      </ul>
+    </details>
+  {% endif %}
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    // Header checkbox toggles every row.
+    document.getElementById("checkAll")?.addEventListener("change", e => {
+      document.querySelectorAll(".row-check").forEach(c => { c.checked = e.target.checked; });
+    });
+  </script>
+{% endblock %}
