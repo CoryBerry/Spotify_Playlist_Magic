@@ -10,6 +10,33 @@ A Flask web app for building and managing Spotify and Plex playlists in ways the
 
 ---
 
+## Personal overlay (`profile/`)
+
+**At session start, read `profile/CONTEXT.md`** — it holds Cory's hard vetoes, house rules for
+building mixes, and the index of people he builds for. `profile/playlists.md` is the pool cheat
+sheet. This repo is deliberately generic so it can be shared; everything personal lives in the
+gitignored `profile/` overlay, which is **its own private repo**
+(`CoryBerry/spotify-magic-profile-cb`) cloned into that path.
+
+If `profile/` is **absent**, this is a fresh/unconfigured clone — copy `profile.sample/` →
+`profile/` and fill it in (see `profile.sample/README.md`). The skills no-op gracefully on the
+sections it leaves empty.
+
+Two kinds of content live there, and the distinction is load-bearing:
+
+- **Live-read, hand-authored** — `CONTEXT.md`, `playlists.md`, `notes/`. The point of the overlay.
+- **Mirrors, script-written** — `memory/` (copy of `~/.claude/projects/C--dev-claudone/memory/`),
+  `backups/spotify_tools.sql` (DB dump), `cache/` (friend profile pulls). Never hand-edit these;
+  the next sync overwrites them. `~/.claude` stays authoritative for memory.
+
+`profile-sync.ps1` dumps the DB (`python cli.py backup` — SQL text, skipping the regenerable
+`playlist_cache` table), mirrors memory/cache/notes into the overlay, then commits + pushes
+**only if something changed**, so it's safe to run on a schedule. `-NoPush` for a local commit.
+
+Restore instructions for a new machine are in `profile/README.md`.
+
+---
+
 ## Stack
 
 - **Framework:** Flask
@@ -36,6 +63,9 @@ templates/
   recently_created.html
 instance/
   spotify_tools.db  ← SQLite DB (auto-created, don't commit)
+profile.sample/     ← committed template for the personal overlay
+profile/            ← gitignored; the private overlay repo (see above)
+profile-sync.ps1    ← dumps the DB + mirrors memory/cache into the overlay, commits, pushes
 IDEAS.md            ← feature backlog
 ```
 
@@ -157,6 +187,15 @@ FeedItem          # Feed Radar review queue: one row per (source, harvested line
 - [ ] Polish pass before r/truespotify post
 
 ## Agent skills
+
+### mix / profile (Spotify curation pair)
+
+`.claude/skills/mix/` builds and ships playlists from Cory's own library;
+`.claude/skills/profile/` reads a *friend's* public playlists into a taste profile
+saved to agent memory, which the mix skill then builds against. Both follow the same
+split — a `*_helper.py` owning all plumbing, a `SKILL.md` owning the judgment — and
+`profile_helper` imports `mix_helper._client()` so there is one Spotify auth path.
+Run both with `PYTHONUTF8=1` from the repo root. Tests: `python -m pytest .claude/skills/`.
 
 ### Issue tracker
 

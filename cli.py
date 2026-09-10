@@ -18,6 +18,7 @@ Usage:
     python cli.py resolve --from tracks.txt                 # dry run — show matches, create nothing
     python cli.py create --name "Rainy Sunday" --from tracks.txt --description "mellow 80-100bpm"
     cat tracks.txt | python cli.py create --name "Focus" -
+    python cli.py backup                                    # dump the DB to profile/backups/
 
 Pass ``--json`` on any command for machine-readable output (what an agent parses).
 """
@@ -25,6 +26,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sqlite3
 import sys
 from typing import Optional
 
@@ -164,6 +167,90 @@ def cmd_create(args) -> int:
     return 0 if result["created"] else 2
 
 
+# --- backup ----------------------------------------------------------------
+
+# Regenerable tables, skipped so the dump stays small and its diffs stay readable.
+# playlist_cache is a 1-hour mirror of the Spotify playlist list — it refills itself on the
+# next page load, and including it would churn the whole file on every single backup.
+BACKUP_SKIP_TABLES = {"playlist_cache"}
+
+DEFAULT_DB   = os.path.join("instance", "spotify_tools.db")
+DEFAULT_DUMP = os.path.join("profile", "backups", "spotify_tools.sql")
+
+
+def dump_db(db_path: str, out_path: str, skip: set[str] = BACKUP_SKIP_TABLES) -> dict:
+    """Write a git-friendly SQL text dump of the DB, minus the regenerable cache tables.
+
+    Text rather than a binary copy on purpose: the overlay repo is a git repo, so a dump
+    that diffs line-by-line keeps its history browsable and its packfiles small.
+    """
+    if not os.path.exists(db_path):
+        raise FileNotFoundError(db_path)
+
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            " ORDER BY name")]
+        kept = [t for t in tables if t not in skip]
+        counts = {t: conn.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0] for t in kept}
+
+        # iterdump() emits the whole DB; filter to the statements for the tables we keep.
+        # Tracking the current table across lines handles multi-line CREATE statements.
+        lines, current, emitting = [], None, True
+        for stmt in conn.iterdump():
+            head = stmt.lstrip()
+            for kind in ("CREATE TABLE", "INSERT INTO", "CREATE INDEX", "CREATE UNIQUE INDEX"):
+                if head.upper().startswith(kind):
+                    current = _stmt_table(head, kind)
+                    emitting = current not in skip
+                    break
+            else:
+                if head.upper().startswith(("BEGIN", "COMMIT", "PRAGMA")):
+                    emitting = True
+            if emitting:
+                lines.append(stmt)
+    finally:
+        conn.close()
+
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+    return {"db": db_path, "out": out_path, "tables": counts,
+            "skipped": sorted(t for t in tables if t in skip),
+            "rows": sum(counts.values())}
+
+
+def _stmt_table(head: str, kind: str) -> str:
+    """Pull the table name out of a CREATE/INSERT statement, unquoted."""
+    rest = head[len(kind):].strip()
+    if kind.startswith("CREATE INDEX") or kind.startswith("CREATE UNIQUE INDEX"):
+        # "<index> ON <table> (...)" — the table is what follows ON.
+        parts = rest.split(" ON ", 1)
+        rest = parts[1] if len(parts) > 1 else rest
+    name = rest.split("(")[0].split()[0]
+    return name.strip('''"'`[]''')
+
+
+def cmd_backup(args) -> int:
+    try:
+        result = dump_db(args.db, args.out)
+    except FileNotFoundError as e:
+        print(f"error: no database at {e}", file=sys.stderr)
+        return 1
+
+    def _human(r):
+        print(f"wrote {r['out']}  ({r['rows']} rows across {len(r['tables'])} tables)")
+        for t, n in sorted(r["tables"].items()):
+            print(f"  {t:<20} {n}")
+        if r["skipped"]:
+            print(f"  (skipped regenerable: {', '.join(r['skipped'])})")
+
+    _emit(result, args.json, _human)
+    return 0
+
+
 # --- argparse wiring -------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -202,6 +289,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp_create.add_argument("--description", default="", help="playlist description")
     sp_create.add_argument("--public", action="store_true", help="make the playlist public (default private)")
     sp_create.set_defaults(func=cmd_create)
+
+    sp_backup = sub.add_parser("backup", parents=[common],
+                               help="dump the DB to a git-friendly .sql file in the profile overlay")
+    sp_backup.add_argument("--db", default=DEFAULT_DB, help=f"path to the SQLite DB (default {DEFAULT_DB})")
+    sp_backup.add_argument("--out", default=DEFAULT_DUMP, help=f"path to write (default {DEFAULT_DUMP})")
+    sp_backup.set_defaults(func=cmd_backup)
 
     return p
 
