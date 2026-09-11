@@ -31,7 +31,13 @@ Two kinds of content live there, and the distinction is load-bearing:
 
 `profile-sync.ps1` dumps the DB (`python cli.py backup` — SQL text, skipping the regenerable
 `playlist_cache` table), mirrors memory/cache/notes into the overlay, then commits + pushes
-**only if something changed**, so it's safe to run on a schedule. `-NoPush` for a local commit.
+**only if something changed**. `-NoPush` for a local commit, `-Quiet` for log-only output.
+
+Run nightly at 02:30 by the **"Spotify Magic Profile Sync"** scheduled task (mirrors the
+"TodoMe Backup" task's settings, offset so the two don't collide). One line per run lands in
+`instance/profile-sync.log`. The task runs as `cberr` with Interactive logon, so it fires only
+while logged in — `StartWhenAvailable` catches up after the machine has been off. Running the
+script by hand is always safe and does the same thing.
 
 Restore instructions for a new machine are in `profile/README.md`.
 
