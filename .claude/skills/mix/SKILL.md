@@ -32,8 +32,32 @@ PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py sources --tag selects
 
 Names live in the app's `playlist_cache`; **the DB never stores track contents**, so
 you must pull tracks live (next step). Prefer 3–5 sources that fit the requested vibe.
-Tags worth knowing: `drops` (discovery), `selects` (Cory's own taste), `chill`,
-`electronic`, `annual`, `office`, `feed`.
+**Tags are the highest-signal filter — reach for `--tag` before `--search`,** because
+`--search` matches the playlist *name only* and Cory names pools by mashing artist names
+together (`Rising Hall Rivers` = Rising Appalachia/Trevor Hall/Nahko; `Broken Metric Stars`
+= Broken Social Scene/Metric/Stars). Those names say nothing about genre or vibe.
+
+Two axes. **Tier** — how much to trust a hit:
+- `selects` — hand-vetted over years. "Stuff Cory loves." Lead "loved" mixes from here.
+- `drops` — **blind-copied from a trusted source, tracks never audited.** A hit means
+  "Cory trusted the source," NOT "Cory loves this." Discovery fuel; seasoning, not spine.
+- `annual` — year pools / album-of-the-year lists. Enjoyed-but-algorithm-heavy.
+- `feed` — external or critic-made lists (Paste, AOTY, Rolling Stone, friends' lists).
+- `notmine` — provenance only: someone else made it. **Neutral weight, not a penalty** —
+  several `notmine` pools are top-20 go-tos. It tells you who to credit (see
+  [[mix-state-sources]]) and that Cory's own taste didn't filter it, nothing more.
+
+**Vibe/kind:** `chill`, `electronic`, `folk`, `instrumental`, `yoga`, `hype` (high energy),
+`decade` (60s–2020s + century pools), `rotation` (the 10/20/30, low signal),
+`current` (`Last 300 Liked` — rolling now-signal), `office`, `kids`.
+
+`yoga` is a **built brief**, not a genre: barefoot folk + world-acoustic + ambient, landing
+in savasana. Six pools carry it. Trust the tag over the name here — `cathedral drops` and
+`Bedtime Jams For Adults` both sound like they belong and don't (art-pop and neo-soul
+respectively).
+
+`folk` is the barefoot/conscious-folk cluster Cory specifically misses when it's absent —
+Rising Appalachia / Trevor Hall / Nahko / Phish. Four pools carry it.
 
 **Weight heavily by `use_count` — it's the leading signal of what Cory actually loves,
 not just what matches a vibe on paper.** The `sources` list is already sorted most-used
