@@ -25,7 +25,7 @@ sections it leaves empty.
 Two kinds of content live there, and the distinction is load-bearing:
 
 - **Live-read, hand-authored** — `CONTEXT.md`, `playlists.md`, `notes/`. The point of the overlay.
-- **Mirrors, script-written** — `memory/` (copy of `~/.claude/projects/C--dev-claudone/memory/`),
+- **Mirrors, script-written** — `memory/` (copy of `~/.claude/projects/C--dev-crate/memory/`),
   `backups/spotify_tools.sql` (DB dump), `cache/` (friend profile pulls). Never hand-edit these;
   the next sync overwrites them. `~/.claude` stays authoritative for memory.
 

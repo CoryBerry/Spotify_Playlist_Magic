@@ -48,7 +48,7 @@ if ($LASTEXITCODE -ne 0) { Log "ERROR db dump: $out"; exit 1 }
 
 # --- 2) Mirror agent memory + the friend-profile cache --------------------
 # robocopy /MIR propagates deletions too; its exit codes 0-7 all mean success.
-$slug   = 'C--dev-claudone'
+$slug   = 'C--dev-crate'
 $memSrc = Join-Path $HOME ".claude\projects\$slug\memory"
 if (Test-Path -LiteralPath $memSrc) {
     robocopy $memSrc (Join-Path $profileDir 'memory') /MIR /XF .gitkeep /NJH /NJS /NDL /NFL /NP | Out-Null
