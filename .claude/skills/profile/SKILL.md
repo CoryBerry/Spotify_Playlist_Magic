@@ -73,6 +73,36 @@ has actually pulled. So "absent from Cory" is weak evidence, and the counts are
 - **Median popularity is the deep-cut read.** Median under ~25 means popularity is a
   negative signal for them and Cory's normal deep-cut default is right. Near 0 across
   thousands of tracks is a real finding, not a data error.
+- **A bimodal histogram is a question, not an answer — go look at what's actually in the
+  low bucket.** The `POPULAR / hits listener` verdict is computed from the median alone,
+  so any big spike under popularity 10 sitting beneath a healthy median is unexplained
+  until you list it. Two profiles failed here in *opposite* directions:
+  - **Jeff** — 50 tracks at 0-9 looked deep-cut, but printing them showed canonical songs
+    on bad pressings (The Breeders "Cannonball" at pop 1, Dead Kennedys "Holiday in
+    Cambodia" at 0, "Wagon Wheel" at 2) plus one whole-album add (14 Thievery Corporation
+    tracks, all of *Radio Retaliation*). **Artifact.** The median was telling the truth.
+  - **Holly** — 465 tracks under 10 (317 at exactly 0, 18% of her library) were all real
+    obscurities, and whole lanes of hers sit down there (honky-tonk median 38, instrumental
+    32). Calling her a hits listener on the median buried that, and Cory corrected it.
+    **Real.** The median was hiding half of her.
+
+  So print the low bucket before you write a word about depth:
+  ```
+  PYTHONUTF8=1 python -c "import json;d=json.load(open('.profile_cache/<user>.json',encoding='utf-8'));[print(p['name'],'|',', '.join(t['artists']),'-',t['name'],'|',t['release'][:4],'pop',t['pop']) for p in d['playlists'] for t in p['tracks'] if t['pop']<10]"
+  ```
+  Recognizable songs, reissue-era release dates, or many tracks sharing one album mean
+  **artifact** — collapse album-adds and trust the median. Unfamiliar names spread across
+  many playlists mean **real** — and then check the *per-pool* medians, because depth is
+  usually lane-dependent rather than global. Say which it is in the profile, with the
+  evidence, so the next mix doesn't inherit a guess.
+- **Depth can be per-lane, and the "How to apply" line should say so.** "Invert the
+  deep-cut default" is one global switch and it's often too blunt — Holly wants hits in
+  her singalong pools and genuine obscurity in her honky-tonk and instrumental ones.
+- **A taste read is not automatically the brief.** What someone's library holds and what
+  Cory wants a mix *for them* to do are different questions. Jeff's library is canonical,
+  but his mixes are a discovery channel on Cory's recommendations — so "he likes hits"
+  was true about the data and wrong as build guidance. **Ask what the mix is for** when
+  the profile is about to constrain the picks.
 - **A playlist holding one artist's whole discography is usually personal, not taste.**
   Jason keeps four playlists covering every Naked Jane release — because *he is*
   Naked Jane. Don't fold that into the artist counts. **Ask rather than infer**; this
