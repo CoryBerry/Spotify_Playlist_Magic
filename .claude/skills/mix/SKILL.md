@@ -85,6 +85,13 @@ Knobs:
   is global streams, which within one album orders the same as "most played.")
 - `--per-album N` (default 3) / `--skip-top N` (default 2) — size and depth of the band.
 - `--per-artist N` — cap one artist from clumping the roster.
+- `--year-min YYYY` / `--year-max YYYY` — era filter, off the album's release year
+  (`--year-min 1980 --year-max 1999` for an 80s/90s brief). A track whose release date
+  Spotify doesn't report is treated as **out** of range, not assumed in — a stderr line
+  counts what the filter dropped. Caveat: the year is the *release date of the album
+  version in the playlist*, so a remaster can read as its reissue year rather than the
+  original; spot-check the edges of a tight range.
+- `--no-explicit` — drop anything Spotify flags explicit (the `[E]` marker in the output).
 - `--sample N [--seed S]` — randomly keep N of the candidates, so repeated builds surprise.
 - Cooldown column: `·` never played, `❄Nd` on cooldown ice (within the 7-day window), `~Nd` played but thawed.
   `--fresh` drops anything on cooldown; `--thawed` surfaces only off-ice throwbacks you've heard before.
@@ -98,6 +105,12 @@ Knobs:
   repeat rosters are cheap. **Needs `LASTFM_API_KEY`** in `.env` — `--tags` hard-fails without it;
   individual artists unknown to Last.fm just come back tagless (a stderr line reports how many resolved).
 
+Each row carries its **runtime** (`m:ss`), **release year** (after the album name) and an
+`[E]` marker when explicit; the stderr footer totals the roster's runtime (`runtime 2h57m`).
+`--json` carries the same as `duration_ms` / `year` / `explicit`. **Size a mix off these —
+don't spend an `sp.tracks()` pass on it.** "Make it ~3 hours" is arithmetic on the roster you
+already have, including after a trim.
+
 The old `tracks` command still exists for a plain full dump (add `--exclude-cooldown`), but reach
 for it only when you deliberately want *everything*, not for normal curation.
 
@@ -107,7 +120,22 @@ from disk — zero `playlist_items` calls — and re-pulls automatically the mom
 (the snapshot flips). No TTL, no config. One caveat: `snapshot_id` doesn't change when Spotify quietly
 recomputes a track's `popularity`, so a long-untouched source serves *frozen* popularity — which `roster`
 band-selection ranks on. Band selection is coarse enough that a few points of drift rarely matters; reach
-for `--no-cache` if you want the freshest popularity for a build.
+for `--no-cache` if you want the freshest popularity for a build. The blob also carries a schema
+`version`; bumping it in `mix_helper.py` invalidates every existing file, so entries written before a
+field was added re-pull on their own rather than serving rows without it.
+
+**Playlist cache (`refresh-cache`):** source *names and ids* resolve against the app's single-row
+`playlist_cache` table. The Flask app refreshes it on a TTL, and the skill writes it too, so a
+playlist `create` just made is usable as a source immediately. If a name still won't resolve — the
+app has been closed a while, or you renamed something in the Spotify client — re-read the library:
+
+```
+PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py refresh-cache
+```
+
+It reports the playlist count. Safe to run any time: the blob is regenerable by design (`cli.py
+backup` skips it), and a `create`/`replace`/`refresh-cache` write leaves the app's own TTL checks
+consistent rather than stale.
 
 ### 3. Curate — this is the part that matters
 Don't shuffle. Hand-pick and **sequence** into an intentional arc. Defaults that have
@@ -231,7 +259,8 @@ is data wrangling, not a one-shot prompt. Gotchas learned the hard way:
 - Reversible: if the user dislikes a result, they can unfollow it, or use the app's
   Recently Created → remove (which deletes from Spotify + DB).
 - Match resolution: `sources`/`tracks`/`roster` accept a full playlist id or a case-insensitive
-  name substring; ambiguous names error out — use a fuller name or the id.
+  name substring; ambiguous names error out — use a fuller name or the id. A name (or id) that
+  matches *nothing* usually means a stale `playlist_cache` — run `refresh-cache`.
 - Keep it simple; this mirrors existing app conventions (see `CLAUDE.md`). No new deps —
   it reuses `spotipy`, `python-dotenv`, and the SQLite DB the app already uses; `--tags` reuses the
   repo's own `lastfm_service` (stdlib-only, no extra pip packages).
