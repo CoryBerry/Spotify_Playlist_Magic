@@ -567,15 +567,147 @@ def _break_runs(assign, max_run, body_end):
             i = j + 1
 
 
+def _lane(t):
+    """A track's lane, normalized. Missing/blank means "unlabeled"."""
+    return (t.get("lane") or "").strip().lower()
+
+
+def _longest_lane_run(seq):
+    """Longest run of consecutive identical lanes.
+
+    Unlabeled tracks break a run rather than extending one — the same rule the
+    artist check uses, so a partly-labeled input degrades instead of misreporting.
+    """
+    best, run, prev = 0, 0, None
+    for t in seq:
+        lane = _lane(t)
+        run = run + 1 if (lane and lane == prev) else (1 if lane else 0)
+        prev = lane or None
+        best = max(best, run)
+    return best
+
+
+def _lane_run_allowance(lane, run_len, lane_left, slots_left, max_lane_run):
+    """The longest run this lane may take *right now* — normally the requested cap.
+
+    A lane with more tracks left than the rest of the set can separate has to run
+    long somewhere, and the honest place to put that is evenly: `left + run_len`
+    tracks over the `others + 1` groups still available is `ceil(...)` apiece.
+
+    Recomputing it at every slot, rather than raising the cap once up front, is
+    what keeps the tail from starving. An eager greedy spends every separator as
+    early as it can and banks the whole excess into one wall at the end — 40
+    dance-punk of 50 came out as ten tidy pairs followed by twenty in a row, which
+    is the complaint this is here to fix. As separators are spent the allowance
+    re-tightens on its own, so the mix closes on the same texture it opened with.
+    """
+    left = lane_left.get(lane, 0)
+    groups = (slots_left - left) + 1  # one more group than there are separators
+    return max(max_lane_run, -(-(left + run_len) // groups))
+
+
+def _lane_excess(seq, max_lane_run):
+    """How many tracks sit beyond the allowed lane run — the repair pass's cost,
+    and the honest shortfall to report when a lane is simply too big."""
+    if max_lane_run <= 0:
+        return 0
+    bad, run, prev = 0, 0, None
+    for t in seq:
+        lane = _lane(t)
+        run = run + 1 if (lane and lane == prev) else (1 if lane else 0)
+        prev = lane or None
+        if run > max_lane_run:
+            bad += 1
+    return bad
+
+
+def _artist_clashes(seq):
+    """Adjacent same-artist pairs — guarded so a lane repair can't trade one flaw
+    for the other."""
+    prev, n = None, 0
+    for t in seq:
+        a = (t.get("artist") or "").lower()
+        if a and a == prev:
+            n += 1
+        prev = a or None
+    return n
+
+
+def _pick_index(pool, recent, run_lane, run_len, run_allowance, lane_left):
+    """Index of the best next track in `pool` for the slot being filled.
+
+    Two soft constraints, ranked: an artist not among the last few picks (the older,
+    stricter invariant) and a lane that would not push the running lane past
+    `run_allowance` (0 = lanes off). Candidates satisfying both win, then
+    artist-only, then lane-only, then whatever is left — so a corner never fails, it
+    just spends the cheaper constraint.
+
+    Ties break toward the lane with the **most tracks still unplaced**, so a big
+    lane is placed as often as its allowance permits rather than hoarded for the
+    end. With no lanes in play every candidate scores alike and this degrades to
+    the old first-fit exactly.
+    """
+    best = None
+    for idx, cand in enumerate(pool):
+        a = (cand.get("artist") or "").lower()
+        lane = _lane(cand)
+        artist_ok = not a or a not in recent  # empty artist never counts as a clash
+        lane_ok = (not lane or not run_allowance or lane != run_lane
+                   or run_len < run_allowance)
+        tier = 0 if (artist_ok and lane_ok) else 1 if artist_ok else 2 if lane_ok else 3
+        key = (tier, -lane_left.get(lane, 0), idx)
+        if best is None or key < best:
+            best = key
+    return best[2]
+
+
+def _repair_lane_runs(seq, max_lane_run, window=48, passes=2):
+    """Swap tracks of the *same energy* to break lane runs the fill couldn't avoid.
+
+    A same-energy swap leaves the arc bit-for-bit intact — only which track sits in
+    a given energy slot changes — so this can improve lane spacing but never bend
+    the shape. A swap is kept solely if it lowers (lane excess, artist clashes) as
+    a pair, so it cannot buy lane spacing with a same-artist adjacency. Bounded: a
+    couple of passes over a local `window`, since the useful partner is a nearby
+    separator, not a track fifty slots away.
+    """
+    if max_lane_run <= 0 or not seq:
+        return
+    n = len(seq)
+    for _ in range(passes):
+        cost = (_lane_excess(seq, max_lane_run), _artist_clashes(seq))
+        if not cost[0]:
+            return
+        for i in range(n):
+            if not cost[0]:
+                return
+            for j in range(max(0, i - window), min(n, i + window + 1)):
+                if j == i or seq[j]["energy"] != seq[i]["energy"]:
+                    continue
+                seq[i], seq[j] = seq[j], seq[i]
+                trial = (_lane_excess(seq, max_lane_run), _artist_clashes(seq))
+                if trial < cost:
+                    cost = trial
+                    break
+                seq[i], seq[j] = seq[j], seq[i]  # no gain — put it back
+
+
 def _sequence_arc(tracks, waves=3.0, open_frac=0.07, land_frac=0.14,
-                  max_run=3, avoid_window=2, seed=0):
-    """Order `tracks` (dicts with int `energy`, optional `artist`) into an arc.
+                  max_run=3, avoid_window=2, max_lane_run=2, seed=0):
+    """Order `tracks` (dicts with int `energy`, optional `artist`/`lane`) into an arc.
 
     Returns a new list, same items, reordered: energy oscillates `waves` times,
     eases in, and lands soft; runs longer than `max_run` are de-clumped at the
     transition shoulders (genuine peaks/troughs may still sustain — see
     `_break_runs`); adjacent same-artist avoided within the last `avoid_window`
-    picks where supply allows. Deterministic for a given `seed`.
+    picks where supply allows; no more than `max_lane_run` consecutive tracks share
+    a lane — and where one lane is too big for that to be possible, its unavoidable
+    long runs are spread evenly rather than banked into one wall at the end (see
+    `_lane_run_allowance`). Deterministic for a given `seed`.
+
+    The two axes are separable by construction: the curve fixes *which energy* each
+    position gets, and lane only decides *which track of that energy* fills it — so
+    de-clumping genre can never bend the energy arc.
     """
     n = len(tracks)
     if n == 0:
@@ -603,22 +735,36 @@ def _sequence_arc(tracks, waves=3.0, open_frac=0.07, land_frac=0.14,
     for lvl in pools:
         rng.shuffle(pools[lvl])
 
+    lane_left = {}
+    for t in tracks:
+        lane = _lane(t)
+        if lane:
+            lane_left[lane] = lane_left.get(lane, 0) + 1
+
     out, recent = [], []
+    run_lane, run_len = None, 0
     for i in range(n):
         pool = pools[assign[i]]
-        pick = None
-        for k, cand in enumerate(pool):
-            a = (cand.get("artist") or "").lower()
-            if not a or a not in recent:  # empty artist never counts as a clash
-                pick = pool.pop(k)
-                break
-        if pick is None:
-            pick = pool.pop(0)  # forced same-artist only if unavoidable
+        allowance = (_lane_run_allowance(run_lane, run_len, lane_left, n - i, max_lane_run)
+                     if run_lane and max_lane_run > 0 else 0)
+        pick = pool.pop(_pick_index(pool, recent, run_lane, run_len,
+                                    allowance, lane_left))
         out.append(pick)
+
         a = (pick.get("artist") or "").lower()
         if avoid_window and a:
             recent.append(a)
             recent = recent[-avoid_window:]
+
+        lane = _lane(pick)
+        if lane:
+            lane_left[lane] -= 1
+            run_len = run_len + 1 if lane == run_lane else 1
+            run_lane = lane
+        else:
+            run_lane, run_len = None, 0  # an unlabeled track separates two runs
+
+    _repair_lane_runs(out, max_lane_run)
     return out
 
 
@@ -823,10 +969,13 @@ def cmd_roster(args):
 def cmd_sequence(args):
     """Reorder a curated pool into an energy arc — pure local logic, no Spotify.
 
-    Input lines: `uri<TAB>energy[<TAB>artist[<TAB>name]]` (blank / '#' lines
-    ignored). `energy` is your own integer level (e.g. 1=mellow, 2=mid, 3=banger)
-    — the one bit taste has to supply. Prints the same lines reordered into the
-    arc, plus an energy sparkline on stderr so you can eyeball the shape.
+    Input lines: `uri<TAB>energy[<TAB>artist[<TAB>name[<TAB>lane]]]` (blank / '#'
+    lines ignored). `energy` is your own integer level (e.g. 1=mellow, 2=mid,
+    3=banger) and `lane` your own genre bucket (e.g. dance-punk, disco) — the two
+    bits taste has to supply. Later columns are optional but positional: to give a
+    lane without an artist/name, leave those columns empty. Prints the same lines
+    reordered into the arc (trailing empty columns trimmed, so it round-trips),
+    plus an energy sparkline and the achieved lane run on stderr.
     """
     raw = (open(args.tracks, encoding="utf-8").read() if args.tracks
            else sys.stdin.read()).splitlines()
@@ -849,28 +998,43 @@ def cmd_sequence(args):
             "energy": energy,
             "artist": parts[2].strip() if len(parts) > 2 else "",
             "name": parts[3].strip() if len(parts) > 3 else "",
+            "lane": parts[4].strip() if len(parts) > 4 else "",
         })
     if not tracks:
         sys.exit("No 'spotify:track:<TAB>energy' lines found on stdin or in --tracks.")
 
     seq = _sequence_arc(tracks, waves=args.waves, land_frac=args.landing,
-                        max_run=args.max_run, seed=args.seed)
+                        max_run=args.max_run, max_lane_run=args.max_lane_run,
+                        seed=args.seed)
 
     for t in seq:
         if args.uris_only:
             print(t["uri"])
             continue
-        cols = [t["uri"], str(t["energy"])]
-        if t["artist"] or t["name"]:
-            cols.append(t["artist"])
-        if t["name"]:
-            cols.append(t["name"])
+        cols = [t["uri"], str(t["energy"]), t["artist"], t["name"], t["lane"]]
+        while len(cols) > 2 and not cols[-1]:
+            cols.pop()  # trim trailing empties: a 2/3/4-column input comes back as one
         print("\t".join(cols))
 
     levels = sorted({t["energy"] for t in tracks})
     print(f"# {len(seq)} tracks · waves={args.waves:g} · landing={args.landing:g} · "
           f"levels={levels}", file=sys.stderr)
     print("# energy " + _spark([t["energy"] for t in seq]), file=sys.stderr)
+
+    lane_counts = {}
+    for t in tracks:
+        lane = _lane(t)
+        if lane:
+            lane_counts[lane] = lane_counts.get(lane, 0) + 1
+    if lane_counts:
+        spread = ", ".join(f"{lane}×{c}" for lane, c in
+                           sorted(lane_counts.items(), key=lambda kv: (-kv[1], kv[0])))
+        run = _longest_lane_run(seq)
+        over = _lane_excess(seq, args.max_lane_run)
+        flag = "" if not over else f" — {over} forced over (supply, not a bug)"
+        print(f"# lanes  {spread}", file=sys.stderr)
+        print(f"# longest lane run {run} (--max-lane-run {args.max_lane_run}){flag}",
+              file=sys.stderr)
 
 
 def _resolve_sources(source_tokens):
@@ -1301,13 +1465,17 @@ def main():
     ro.set_defaults(func=cmd_roster)
 
     q = sub.add_parser("sequence", help="order a curated pool into an energy arc (offline)")
-    q.add_argument("--tracks", help="file of 'uri<TAB>energy[<TAB>artist[<TAB>name]]' lines (else stdin)")
+    q.add_argument("--tracks",
+                   help="file of 'uri<TAB>energy[<TAB>artist[<TAB>name[<TAB>lane]]]' lines (else stdin)")
     q.add_argument("--waves", type=float, default=3.0, help="number of energy peaks across the mix (default 3)")
     q.add_argument("--landing", type=float, default=0.14,
                    help="fraction of the tail reserved for a soft wind-down (default 0.14)")
     q.add_argument("--max-run", type=int, default=3,
                    help="de-clump body runs longer than this at transition shoulders "
                         "(best-effort; true peaks/troughs may sustain; default 3)")
+    q.add_argument("--max-lane-run", type=int, default=2,
+                   help="max consecutive tracks sharing a lane, if the input has a "
+                        "lane column (0 disables; default 2)")
     q.add_argument("--seed", type=int, default=0, help="seed for the within-level shuffle (reproducible)")
     q.add_argument("--uris-only", action="store_true", help="print only URIs (pipe straight to create)")
     q.set_defaults(func=cmd_sequence)

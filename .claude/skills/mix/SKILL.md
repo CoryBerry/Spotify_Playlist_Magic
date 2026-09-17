@@ -185,8 +185,9 @@ At ~18–24 tracks you can hand-order by eye. **For a bigger pool or an explicit
 re-deriving the arc math by hand (that's how the first big one burned a pile of iterations):
 
 ```
-# input: one 'uri<TAB>energy[<TAB>artist[<TAB>name]]' line per track.
+# input: one 'uri<TAB>energy[<TAB>artist[<TAB>name[<TAB>lane]]]' line per track.
 # energy is YOUR taste call — 1=mellow, 2=mid, 3=banger (any integer scale).
+# lane is YOUR genre bucket — dance-punk / disco / house / … (optional; see below).
 PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py sequence --tracks picks.txt > ordered.txt
 ```
 
@@ -198,9 +199,21 @@ shuffle reproducible; `--uris-only` pipes straight into `create`. It prints an *
 sparkline to stderr** (`▄▄▄█▄▄███▄…▁▁▁`) — glance at it to confirm the shape before you
 ship, rather than reading 100 rows. Pure local logic, no Spotify calls.
 
-**Assigning energy is the one thing you can't automate** — Spotify killed `/audio-features`,
-so there's no danceability/energy to read. Tag each track yourself (artist/genre knowledge,
-or `roster --tags` for a Last.fm mood hint). The command owns the *arc*, you own the *taste*.
+**Give it a lane column for anything party-shaped.** Energy and genre are different axes:
+a set can hold a flawless energy curve and still play eight dance-punk tracks back to back,
+which "would be weird at an actual party." With a `lane` column, `--max-lane-run` (default 2)
+stops more than N in a row from sharing one, and stderr adds the lane spread and the longest
+run actually achieved. The columns are positional, so a lane with no artist/name means two empty
+columns (`uri<TAB>2<TAB><TAB><TAB>disco`). The axes never fight — lane only decides *which* track
+of an already-chosen energy fills a slot, so the curve comes out identical either way. If one
+lane is more than about half the mix, some doubling up is arithmetic rather than a bug: it
+gets spread evenly end to end instead of walling up at the finish, and stderr says how many
+were forced.
+
+**Assigning energy and lane is the one thing you can't automate** — Spotify killed
+`/audio-features`, so there's no danceability/energy to read. Tag each track yourself
+(artist/genre knowledge, or `roster --tags` for a Last.fm mood hint). The command owns the
+*arc*, you own the *taste*.
 
 ### 4. Save first, then review
 **Save the playlist immediately — don't wait for approval.** Cory prefers to react to a
@@ -288,8 +301,9 @@ is data wrangling, not a one-shot prompt. Gotchas learned the hard way:
   a curated album list against "My Spotify Top 100" can match only a handful of albums
   (the Top 100 skews to singles/other listening). That's a real finding worth stating
   plainly, not a bug to engineer around.
-- **Energy tiers stay manual** (see step 3) — tag ~100 tracks by artist/genre knowledge,
-  then hand the file to `sequence`.
+- **Energy tiers and lanes stay manual** (see step 3) — tag ~100 tracks by artist/genre
+  knowledge, then hand the file to `sequence`. At that size the lane column earns its keep:
+  a hundred tracks is where one genre quietly takes over whole stretches.
 
 ## Notes
 - Reversible: if the user dislikes a result, they can unfollow it, or use the app's
