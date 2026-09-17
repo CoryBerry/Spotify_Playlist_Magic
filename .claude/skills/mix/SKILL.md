@@ -92,6 +92,15 @@ Knobs:
   version in the playlist*, so a remaster can read as its reissue year rather than the
   original; spot-check the edges of a tight range.
 - `--no-explicit` — drop anything Spotify flags explicit (the `[E]` marker in the output).
+- `--pop-min N` / `--pop-max N` — a **popularity window**, which band mode and `--top` can't
+  express on their own. Applied *after* band/`--top` selection, so they compose:
+  `--top --pop-max 70` is "each album's biggest track, minus the ubiquitous ones" — precisely
+  the "recognizable but not overplayed" ask. Rough calibration from real builds:
+  *"known, but you can still be snobby about liking it"* ≈ `--pop-min 40 --pop-max 75`;
+  *"more snobby / less mainstream"* ≈ `--pop-max 65`, no floor.
+- Impossible windows (`--pop-min 80 --pop-max 40`, `--pop-min 150`, an inverted year range)
+  **error** rather than returning an empty roster — a silent nil reads as "the library has
+  nothing like that", which is a much more expensive wrong conclusion.
 - `--sample N [--seed S]` — randomly keep N of the candidates, so repeated builds surprise.
 - Cooldown column: `·` never played, `❄Nd` on cooldown ice (within the 7-day window), `~Nd` played but thawed.
   `--fresh` drops anything on cooldown; `--thawed` surfaces only off-ice throwbacks you've heard before.
@@ -136,6 +145,33 @@ PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py refresh-cache
 It reports the playlist count. Safe to run any time: the blob is regenerable by design (`cli.py
 backup` skips it), and a `create`/`replace`/`refresh-cache` write leaves the app's own TTL checks
 consistent rather than stale.
+
+### 2b. "Do we even have these artists?" — `find-artists`
+
+Before designing a themed mix around a roster of artists, check what the library actually holds.
+This sweeps every **already-pulled** pool at once, fully offline — no Spotify calls — and it finds
+things `sources --search` never could, because pool names (`Broken Metric Stars`) say nothing
+about their contents:
+
+```
+PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py find-artists "LCD Soundsystem" "The Rapture"
+PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py find-artists --file canon.txt --missing
+```
+
+Hits are grouped per name, ranked by popularity, each row tagged with the pool it came from
+(`+N` when the track sits in several). `--top N` (default 3) sizes the sample, `--json` for
+scripting, `--file` takes one name per line (`#` comments fine).
+
+- **`--missing` is the useful half** — it lists only the names with *no* hits, which is what tells
+  you whether a themed mix is buildable at all.
+- Matching is **case-insensitive substring on the cached artist field, on purpose.** Punctuation
+  and acronym names resolve badly through Spotify's artist search (`!!!` returns R.E.M., `CSS`
+  returns RAC); the cache sidesteps it. For the same reason, when you *do* need to find such an
+  artist on Spotify, search a known **album title** instead of the artist name.
+- **Coverage is cached pools only.** A nil result means "not in any pool pulled so far", not "not
+  in the library" — the footer says so, and names the count of pools searched. Pools still on an
+  older cache schema are searched but show no runtime/year until a roster re-pulls them; the
+  footer counts those too.
 
 ### 3. Curate — this is the part that matters
 Don't shuffle. Hand-pick and **sequence** into an intentional arc. Defaults that have

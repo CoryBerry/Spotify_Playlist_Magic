@@ -15,6 +15,9 @@ dance by hand:
 
     refresh-cache  re-read the Spotify library into the app's playlist_cache, so
               source names/ids resolve without opening the web app first
+    find-artists  sweep the already-pulled pools for a roster of artists —
+              fully offline, and the only way to ask "what does the library
+              NOT have?" (pool names say nothing about their contents)
 
 Auth reuses the same Spotipy `.cache` token the Flask app writes, so no browser
 login is needed as long as a valid token exists. Reads of *Spotify* are always
@@ -35,6 +38,7 @@ Examples:
     python mix_helper.py create --name "Sunday Slow Burn" --desc "..." --uris-file picks.txt --record --cooldown --source "Chill Albums" --source "90s Albums"
 """
 import argparse
+import glob
 import json
 import math
 import os
@@ -410,6 +414,51 @@ def _band_select(album_tracks, skip_top, per_album, top_mode):
     return album_tracks[skip:skip + per_album]
 
 
+def _validate_filters(args):
+    """Fail fast on an impossible filter window instead of returning an empty roster.
+
+    A silently-empty result reads as "the library has nothing like that", which is a
+    much more expensive wrong conclusion than an error message.
+    """
+    for flag, val in (("--pop-min", args.pop_min), ("--pop-max", args.pop_max)):
+        if val is not None and not 0 <= val <= 100:
+            sys.exit(f"{flag} must be 0-100 (Spotify's popularity scale); got {val}.")
+    if (args.pop_min is not None and args.pop_max is not None
+            and args.pop_min > args.pop_max):
+        sys.exit(f"--pop-min {args.pop_min} is above --pop-max {args.pop_max} — nothing can match.")
+    if args.year_min and args.year_max and args.year_min > args.year_max:
+        sys.exit(f"--year-min {args.year_min} is above --year-max {args.year_max} — "
+                 "nothing can match.")
+
+
+# Filter labels, in the order _filter_reason tests them — also the stderr report order.
+_FILTER_REASONS = ("era", "explicit", "pop")
+
+
+def _filter_reason(t, args):
+    """Why this candidate is excluded ("era"/"explicit"/"pop"), or None to keep it.
+
+    All three read straight off the cached fields (issues #12, #14) — no API calls,
+    and applied *after* band/`--top` selection so they narrow the chosen cuts rather
+    than changing which cuts an album offers. A track with no known release year is
+    dropped by either year bound rather than assumed in range: an era brief wants
+    certainty, not guesses.
+    """
+    yr = t.get("year")
+    if args.year_min and (yr is None or yr < args.year_min):
+        return "era"
+    if args.year_max and (yr is None or yr > args.year_max):
+        return "era"
+    if args.no_explicit and t.get("explicit"):
+        return "explicit"
+    pop = t.get("pop") or 0
+    if args.pop_min is not None and pop < args.pop_min:
+        return "pop"
+    if args.pop_max is not None and pop > args.pop_max:
+        return "pop"
+    return None
+
+
 def _annotate_tags(rows, lookup):
     """Attach each row's lead-artist tags in place, deduping lookups per run.
 
@@ -652,6 +701,7 @@ def cmd_roster(args):
     bigger *roster* of the good-but-not-obvious cuts (default) so a mix has
     surprise, or the bangers (`--top`) for albums you want to lead with hits.
     """
+    _validate_filters(args)
     pls = _cached_playlists()
     by_id = {p["id"]: p["name"] for p in pls}
     by_name = {p["name"]: p["id"] for p in pls}
@@ -677,7 +727,7 @@ def cmd_roster(args):
 
     seen = set()
     rows = []
-    n_era = n_explicit = 0
+    excluded = dict.fromkeys(_FILTER_REASONS, 0)
     for src in args.sources:
         name, pid = _resolve(src, by_id, by_name)
         # bucket this source's tracks by album, in first-seen order
@@ -703,16 +753,9 @@ def cmd_roster(args):
                     continue
                 if args.thawed and (days is None or frozen):
                     continue
-                # Era / content filters, straight off the cached fields (issue #12).
-                # A track with no known year is dropped by either year bound rather
-                # than assumed in-range — an era brief wants certainty, not guesses.
-                yr = t.get("year")
-                if ((args.year_min and (yr is None or yr < args.year_min))
-                        or (args.year_max and (yr is None or yr > args.year_max))):
-                    n_era += 1
-                    continue
-                if args.no_explicit and t.get("explicit"):
-                    n_explicit += 1
+                reason = _filter_reason(t, args)
+                if reason:
+                    excluded[reason] += 1
                     continue
                 seen.add(t["uri"])
                 t = dict(t, ice=label, frozen=frozen, days=days, source=name)
@@ -754,11 +797,14 @@ def cmd_roster(args):
     total_ms = sum(t.get("duration_ms") or 0 for t in rows)
     # Filter notes go to stderr in both modes (like --tags) — a --json caller wants
     # to know the era filter ate half the pool just as much as a text one does.
-    if n_era:
-        print(f"# excluded {n_era} track(s) outside the year range (unknown year counts as out)",
-              file=sys.stderr)
-    if n_explicit:
-        print(f"# excluded {n_explicit} explicit track(s)", file=sys.stderr)
+    notes = {
+        "era": "outside the year range (unknown year counts as out)",
+        "explicit": "flagged explicit",
+        "pop": "outside the popularity band",
+    }
+    for reason in _FILTER_REASONS:
+        if excluded[reason]:
+            print(f"# excluded {excluded[reason]} track(s) {notes[reason]}", file=sys.stderr)
 
     if args.json:
         print(json.dumps(rows, ensure_ascii=False, indent=2))
@@ -982,6 +1028,118 @@ def cmd_replace(args):
                            track_total=len(uris))
 
 
+def _cached_pool_tracks():
+    """Every track in every `.mix_cache` file: ((playlist_id, track) pairs, n_stale).
+
+    Purely local — the point of `find-artists` is that it costs no Spotify calls,
+    so this deliberately does NOT re-pull stale-schema files the way
+    `_fetch_tracks_rich_cached` would; a pre-v2 blob is read as-is and its tracks
+    simply lack duration/year. `n_stale` counts those pools so the caller can say
+    so rather than rendering a missing runtime as a plausible-looking `0:00`.
+    """
+    out, stale = [], 0
+    for path in sorted(glob.glob(os.path.join(MIX_CACHE_DIR, "*.json"))):
+        pid = os.path.splitext(os.path.basename(path))[0]
+        try:
+            with open(path, encoding="utf-8") as fh:
+                blob = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if blob.get("version") != MIX_CACHE_VERSION:
+            stale += 1
+        for t in blob.get("tracks") or []:
+            out.append((pid, t))
+    return out, stale
+
+
+def cmd_find_artists(args):
+    """Sweep the cached pools for a roster of artists — offline, no Spotify calls.
+
+    Answers "does the library contain any of these N artists?", which name-based
+    `sources --search` can't: pools are named things like `Broken Metric Stars`,
+    which says nothing about its contents. `--missing` is the genuinely useful
+    half — it tells you whether a themed mix is buildable at all.
+
+    Matching is deliberately substring-on-the-cached-`artist`-field: punctuation and
+    acronym names ('!!!', 'CSS') resolve badly through Spotify's artist search, and
+    this sidesteps it entirely.
+    """
+    names = list(args.names or [])
+    if args.file:
+        with open(args.file, encoding="utf-8") as fh:
+            names += [ln.strip() for ln in fh
+                      if ln.strip() and not ln.lstrip().startswith("#")]
+    names = list(dict.fromkeys(names))  # de-dupe, preserve order
+    if not names:
+        sys.exit("Give at least one artist name, or --file with one name per line.")
+
+    pool_names = {p["id"]: p["name"] for p in (_read_playlist_cache() or [])}
+    pairs, n_stale = _cached_pool_tracks()
+    pools_seen = {pid for pid, _ in pairs}
+
+    # One pass over the cache per run, not per name: bucket every match by the query
+    # that found it, deduping a track that appears in several pools while keeping the
+    # list of pools it came from.
+    found = {n: {} for n in names}
+    lowered = [(n, n.lower()) for n in names]
+    for pid, t in pairs:
+        artist = (t.get("artist") or "").lower()
+        if not artist:
+            continue
+        for name, needle in lowered:
+            if needle in artist:
+                hit = found[name].setdefault(t["uri"], dict(t, pools=[]))
+                pool = pool_names.get(pid, pid)
+                if pool not in hit["pools"]:
+                    hit["pools"].append(pool)
+
+    missing = [n for n in names if not found[n]]
+
+    if args.missing:
+        if args.json:
+            print(json.dumps(missing, ensure_ascii=False, indent=2))
+        else:
+            for n in missing:
+                print(n)
+        print(f"# {len(missing)}/{len(names)} name(s) absent from {len(pools_seen)} cached pool(s)",
+              file=sys.stderr)
+        return
+
+    results = []
+    for name in names:
+        hits = sorted(found[name].values(), key=lambda r: -(r.get("pop") or 0))
+        results.append({"name": name, "hits": len(hits),
+                        "tracks": hits[:args.top] if args.top else hits})
+
+    if args.json:
+        print(json.dumps(results, ensure_ascii=False, indent=2))
+    else:
+        for r in results:
+            if not r["hits"]:
+                print(f"{r['name']} — no hits")
+                continue
+            pools = {p for t in r["tracks"] for p in t["pools"]}
+            print(f"{r['name']} — {r['hits']} track(s), {len(pools)} pool(s)")
+            for t in r["tracks"]:
+                year = f" · {t['year']}" if t.get("year") else ""
+                # A pre-v2 blob has no duration at all — show that, don't render it
+                # as 0:00, which reads as a real zero-length track.
+                dur = _mmss(t["duration_ms"]) if "duration_ms" in t else "—"
+                where = t["pools"][0] + (f" +{len(t['pools']) - 1}" if len(t["pools"]) > 1 else "")
+                print(f"  {t.get('pop') or 0:>3}  {dur:>5}  {t['uri']}  "
+                      f"{t['name']} — {t['artist']}  ({t.get('album', '')}{year})  [{where}]")
+
+    hit_names = len(names) - len(missing)
+    print(f"# {hit_names}/{len(names)} name(s) found across {len(pools_seen)} cached pool(s); "
+          f"uncached pools are invisible — a nil result means \"not in any pool pulled so far\", "
+          f"not \"not in the library\"", file=sys.stderr)
+    if n_stale:
+        print(f"# {n_stale} pool(s) still on an older cache schema — their rows show no "
+              f"runtime/year until a roster re-pulls them", file=sys.stderr)
+    if missing:
+        print(f"# missing: {', '.join(missing)}", file=sys.stderr)
+
+
 def cmd_refresh_cache(args):
     """Rebuild the app's playlist_cache from Spotify (issue #13).
 
@@ -1127,6 +1285,11 @@ def main():
                          "(unknown release year is treated as out of range)")
     ro.add_argument("--no-explicit", action="store_true",
                     help="drop tracks Spotify flags explicit")
+    ro.add_argument("--pop-min", type=int, default=None, metavar="N",
+                    help="popularity floor, 0-100 (composes with --top / band mode)")
+    ro.add_argument("--pop-max", type=int, default=None, metavar="N",
+                    help="popularity ceiling, 0-100 — '--top --pop-max 70' is "
+                         "\"each album's biggest track, minus the ubiquitous ones\"")
     ro.add_argument("--sample", type=int, default=0, help="randomly keep N of the candidates (0 = all)")
     ro.add_argument("--seed", type=int, default=None, help="seed for --sample (reproducible)")
     ro.add_argument("--no-cache", action="store_true",
@@ -1180,6 +1343,17 @@ def main():
     rc = sub.add_parser("refresh-cache",
                         help="re-read your Spotify library into the app's playlist_cache")
     rc.set_defaults(func=cmd_refresh_cache)
+
+    fa = sub.add_parser("find-artists",
+                        help="sweep the cached pools for a roster of artists (offline)")
+    fa.add_argument("names", nargs="*", help="artist names (case-insensitive substring)")
+    fa.add_argument("--file", help="file of artist names, one per line ('#' comments ok)")
+    fa.add_argument("--top", type=int, default=3,
+                    help="tracks to show per matched artist, by popularity (0 = all)")
+    fa.add_argument("--missing", action="store_true",
+                    help="list ONLY the names with no hits — what the library lacks")
+    fa.add_argument("--json", action="store_true")
+    fa.set_defaults(func=cmd_find_artists)
 
     i = sub.add_parser("ice", help="manual ice box: never-list / timed freeze, shared with the app")
     i.add_argument("action", choices=["add", "list", "thaw"])
