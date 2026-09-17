@@ -173,6 +173,33 @@ scripting, `--file` takes one name per line (`#` comments fine).
   older cache schema are searched but show no runtime/year until a roster re-pulls them; the
   footer counts those too.
 
+### 2c. Keeping a build cheap
+
+Two habits that cost real time when ignored.
+
+**Narrow with flags, not with your eyes.** Nearly every constraint a brief implies now has a
+flag — `--pop-min`/`--pop-max`, `--year-min`/`--year-max`, `--no-explicit`, `--fresh`,
+`--per-artist`, `--sample`. Push the brief *into the roster call* so what comes back is already
+close to the shortlist. Rostering a 300-800 track pool wide and then reading 40-70 lines of
+mostly-discarded rows is the single largest output block in a typical session, and it's avoidable.
+When a filter genuinely has no flag, take `--json` and print only the slice you'll actually use —
+never the raw dump.
+
+**Budget ~4.0-4.5 min per track, then let the footer settle it.** Three ~3-hour mixes built from
+these pools landed at:
+
+| Mix | Tracks | Runtime | min/track |
+|---|---|---|---|
+| eclectic / world / organic house | 42 | 3h10 | 4.51 |
+| dance-punk + hip-hop + hyperpop | 44 | 3h03 | 4.15 |
+| deep-cut dance party | 46 | 3h06 | 4.03 |
+
+So **3 hours ≈ 42-46 tracks** — start near 45 and read the roster footer's `runtime` total rather
+than guessing. Expect to trim: all three overshot on first assembly, by 5, 39 and 19 minutes.
+Track *count* is a poor predictor because a couple of outliers move the total more than the count
+suggests — an 8-9 min remix or a 7 min house cut is worth two ordinary tracks. Cut the longest
+low-conviction picks first; that's usually two or three edits rather than a rebalance.
+
 ### 3. Curate — this is the part that matters
 Don't shuffle. Hand-pick and **sequence** into an intentional arc. Defaults that have
 worked: ~18–24 tracks; no two adjacent tracks share an artist; interleave sources so no
