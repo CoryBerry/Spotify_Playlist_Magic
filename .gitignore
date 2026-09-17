@@ -15,7 +15,7 @@ scratch/
 
 # Personal curation overlay — its own PRIVATE repo (spotify-magic-profile-cb).
 # profile.sample/ is the committed template; profile/ is never shared with the app.
-profile/
+/profile/
 
 # Scratch output from mix / profile skill runs — regenerable dumps, not source.
 # Root-anchored on purpose so these never hide a real file in a subdirectory.

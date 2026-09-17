@@ -32,8 +32,32 @@ PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py sources --tag selects
 
 Names live in the app's `playlist_cache`; **the DB never stores track contents**, so
 you must pull tracks live (next step). Prefer 3–5 sources that fit the requested vibe.
-Tags worth knowing: `drops` (discovery), `selects` (Cory's own taste), `chill`,
-`electronic`, `annual`, `office`, `feed`.
+**Tags are the highest-signal filter — reach for `--tag` before `--search`,** because
+`--search` matches the playlist *name only* and Cory names pools by mashing artist names
+together (`Rising Hall Rivers` = Rising Appalachia/Trevor Hall/Nahko; `Broken Metric Stars`
+= Broken Social Scene/Metric/Stars). Those names say nothing about genre or vibe.
+
+Two axes. **Tier** — how much to trust a hit:
+- `selects` — hand-vetted over years. "Stuff Cory loves." Lead "loved" mixes from here.
+- `drops` — **blind-copied from a trusted source, tracks never audited.** A hit means
+  "Cory trusted the source," NOT "Cory loves this." Discovery fuel; seasoning, not spine.
+- `annual` — year pools / album-of-the-year lists. Enjoyed-but-algorithm-heavy.
+- `feed` — external or critic-made lists (Paste, AOTY, Rolling Stone, friends' lists).
+- `notmine` — provenance only: someone else made it. **Neutral weight, not a penalty** —
+  several `notmine` pools are top-20 go-tos. It tells you who to credit (see
+  [[mix-state-sources]]) and that Cory's own taste didn't filter it, nothing more.
+
+**Vibe/kind:** `chill`, `electronic`, `folk`, `instrumental`, `yoga`, `hype` (high energy),
+`decade` (60s–2020s + century pools), `rotation` (the 10/20/30, low signal),
+`current` (`Last 300 Liked` — rolling now-signal), `office`, `kids`.
+
+`yoga` is a **built brief**, not a genre: barefoot folk + world-acoustic + ambient, landing
+in savasana. Six pools carry it. Trust the tag over the name here — `cathedral drops` and
+`Bedtime Jams For Adults` both sound like they belong and don't (art-pop and neo-soul
+respectively).
+
+`folk` is the barefoot/conscious-folk cluster Cory specifically misses when it's absent —
+Rising Appalachia / Trevor Hall / Nahko / Phish. Four pools carry it.
 
 **Weight heavily by `use_count` — it's the leading signal of what Cory actually loves,
 not just what matches a vibe on paper.** The `sources` list is already sorted most-used
@@ -61,6 +85,22 @@ Knobs:
   is global streams, which within one album orders the same as "most played.")
 - `--per-album N` (default 3) / `--skip-top N` (default 2) — size and depth of the band.
 - `--per-artist N` — cap one artist from clumping the roster.
+- `--year-min YYYY` / `--year-max YYYY` — era filter, off the album's release year
+  (`--year-min 1980 --year-max 1999` for an 80s/90s brief). A track whose release date
+  Spotify doesn't report is treated as **out** of range, not assumed in — a stderr line
+  counts what the filter dropped. Caveat: the year is the *release date of the album
+  version in the playlist*, so a remaster can read as its reissue year rather than the
+  original; spot-check the edges of a tight range.
+- `--no-explicit` — drop anything Spotify flags explicit (the `[E]` marker in the output).
+- `--pop-min N` / `--pop-max N` — a **popularity window**, which band mode and `--top` can't
+  express on their own. Applied *after* band/`--top` selection, so they compose:
+  `--top --pop-max 70` is "each album's biggest track, minus the ubiquitous ones" — precisely
+  the "recognizable but not overplayed" ask. Rough calibration from real builds:
+  *"known, but you can still be snobby about liking it"* ≈ `--pop-min 40 --pop-max 75`;
+  *"more snobby / less mainstream"* ≈ `--pop-max 65`, no floor.
+- Impossible windows (`--pop-min 80 --pop-max 40`, `--pop-min 150`, an inverted year range)
+  **error** rather than returning an empty roster — a silent nil reads as "the library has
+  nothing like that", which is a much more expensive wrong conclusion.
 - `--sample N [--seed S]` — randomly keep N of the candidates, so repeated builds surprise.
 - Cooldown column: `·` never played, `❄Nd` on cooldown ice (within the 7-day window), `~Nd` played but thawed.
   `--fresh` drops anything on cooldown; `--thawed` surfaces only off-ice throwbacks you've heard before.
@@ -74,6 +114,12 @@ Knobs:
   repeat rosters are cheap. **Needs `LASTFM_API_KEY`** in `.env` — `--tags` hard-fails without it;
   individual artists unknown to Last.fm just come back tagless (a stderr line reports how many resolved).
 
+Each row carries its **runtime** (`m:ss`), **release year** (after the album name) and an
+`[E]` marker when explicit; the stderr footer totals the roster's runtime (`runtime 2h57m`).
+`--json` carries the same as `duration_ms` / `year` / `explicit`. **Size a mix off these —
+don't spend an `sp.tracks()` pass on it.** "Make it ~3 hours" is arithmetic on the roster you
+already have, including after a trim.
+
 The old `tracks` command still exists for a plain full dump (add `--exclude-cooldown`), but reach
 for it only when you deliberately want *everything*, not for normal curation.
 
@@ -83,7 +129,49 @@ from disk — zero `playlist_items` calls — and re-pulls automatically the mom
 (the snapshot flips). No TTL, no config. One caveat: `snapshot_id` doesn't change when Spotify quietly
 recomputes a track's `popularity`, so a long-untouched source serves *frozen* popularity — which `roster`
 band-selection ranks on. Band selection is coarse enough that a few points of drift rarely matters; reach
-for `--no-cache` if you want the freshest popularity for a build.
+for `--no-cache` if you want the freshest popularity for a build. The blob also carries a schema
+`version`; bumping it in `mix_helper.py` invalidates every existing file, so entries written before a
+field was added re-pull on their own rather than serving rows without it.
+
+**Playlist cache (`refresh-cache`):** source *names and ids* resolve against the app's single-row
+`playlist_cache` table. The Flask app refreshes it on a TTL, and the skill writes it too, so a
+playlist `create` just made is usable as a source immediately. If a name still won't resolve — the
+app has been closed a while, or you renamed something in the Spotify client — re-read the library:
+
+```
+PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py refresh-cache
+```
+
+It reports the playlist count. Safe to run any time: the blob is regenerable by design (`cli.py
+backup` skips it), and a `create`/`replace`/`refresh-cache` write leaves the app's own TTL checks
+consistent rather than stale.
+
+### 2b. "Do we even have these artists?" — `find-artists`
+
+Before designing a themed mix around a roster of artists, check what the library actually holds.
+This sweeps every **already-pulled** pool at once, fully offline — no Spotify calls — and it finds
+things `sources --search` never could, because pool names (`Broken Metric Stars`) say nothing
+about their contents:
+
+```
+PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py find-artists "LCD Soundsystem" "The Rapture"
+PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py find-artists --file canon.txt --missing
+```
+
+Hits are grouped per name, ranked by popularity, each row tagged with the pool it came from
+(`+N` when the track sits in several). `--top N` (default 3) sizes the sample, `--json` for
+scripting, `--file` takes one name per line (`#` comments fine).
+
+- **`--missing` is the useful half** — it lists only the names with *no* hits, which is what tells
+  you whether a themed mix is buildable at all.
+- Matching is **case-insensitive substring on the cached artist field, on purpose.** Punctuation
+  and acronym names resolve badly through Spotify's artist search (`!!!` returns R.E.M., `CSS`
+  returns RAC); the cache sidesteps it. For the same reason, when you *do* need to find such an
+  artist on Spotify, search a known **album title** instead of the artist name.
+- **Coverage is cached pools only.** A nil result means "not in any pool pulled so far", not "not
+  in the library" — the footer says so, and names the count of pools searched. Pools still on an
+  older cache schema are searched but show no runtime/year until a roster re-pulls them; the
+  footer counts those too.
 
 ### 3. Curate — this is the part that matters
 Don't shuffle. Hand-pick and **sequence** into an intentional arc. Defaults that have
@@ -207,7 +295,8 @@ is data wrangling, not a one-shot prompt. Gotchas learned the hard way:
 - Reversible: if the user dislikes a result, they can unfollow it, or use the app's
   Recently Created → remove (which deletes from Spotify + DB).
 - Match resolution: `sources`/`tracks`/`roster` accept a full playlist id or a case-insensitive
-  name substring; ambiguous names error out — use a fuller name or the id.
+  name substring; ambiguous names error out — use a fuller name or the id. A name (or id) that
+  matches *nothing* usually means a stale `playlist_cache` — run `refresh-cache`.
 - Keep it simple; this mirrors existing app conventions (see `CLAUDE.md`). No new deps —
   it reuses `spotipy`, `python-dotenv`, and the SQLite DB the app already uses; `--tags` reuses the
   repo's own `lastfm_service` (stdlib-only, no extra pip packages).

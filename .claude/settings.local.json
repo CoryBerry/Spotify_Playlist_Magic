@@ -6,7 +6,11 @@
       "Bash(PYTHONUTF8=1 python *)",
       "Bash(gh issue *)",
       "Bash(gh label *)",
-      "Read(//c/Users/cberr/.claude/skills/**)"
+      "Read(//c/Users/cberr/.claude/skills/**)",
+      "Read(//tmp/**)",
+      "Bash(cygpath -w /tmp/top100_2025.txt)",
+      "Bash(PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py roster \"My 2026 Playlist\" --per-album 3 --fresh --tags --json)",
+      "Bash(python -c \"import json;print\\(len\\(json.load\\(open\\('r26.json'\\)\\)\\)\\)\")"
     ]
   }
 }

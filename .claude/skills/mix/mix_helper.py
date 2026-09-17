@@ -13,9 +13,17 @@ dance by hand:
               it to the app's DB (CreatedPlaylist + TrackHistory + PlaylistUsage for
               each --source) like a real build
 
+    refresh-cache  re-read the Spotify library into the app's playlist_cache, so
+              source names/ids resolve without opening the web app first
+    find-artists  sweep the already-pulled pools for a roster of artists —
+              fully offline, and the only way to ask "what does the library
+              NOT have?" (pool names say nothing about their contents)
+
 Auth reuses the same Spotipy `.cache` token the Flask app writes, so no browser
-login is needed as long as a valid token exists. Reads are always safe; `create`
-is the only writing verb and must be invoked explicitly.
+login is needed as long as a valid token exists. Reads of *Spotify* are always
+safe; `create` and `replace` are the only verbs that write to Spotify and must be
+invoked explicitly. `create`, `replace` and `refresh-cache` also write the app's
+regenerable `playlist_cache` blob so the skill can see its own playlists.
 
 The `roster` verb can optionally annotate each candidate with its lead artist's
 Last.fm tags (`--tags`, opt-in — needs LASTFM_API_KEY; plain roster stays offline
@@ -30,6 +38,7 @@ Examples:
     python mix_helper.py create --name "Sunday Slow Burn" --desc "..." --uris-file picks.txt --record --cooldown --source "Chill Albums" --source "90s Albums"
 """
 import argparse
+import glob
 import json
 import math
 import os
@@ -55,6 +64,11 @@ CACHE_PATH = os.path.join(REPO_ROOT, ".cache")
 # unchanged source is served with zero playlist_items calls (issue #3). One JSON
 # file per playlist; created lazily; git-ignored. See _fetch_tracks_rich_cached.
 MIX_CACHE_DIR = os.path.join(REPO_ROOT, ".mix_cache")
+# Schema marker for the per-track dicts inside those files. Bump it whenever
+# _fetch_tracks_rich gains or renames a field: a blob written by an older version
+# is treated as a miss and re-pulled, so a stale-schema entry can never surface
+# rows missing the new keys. v2 added duration_ms / year / explicit (issue #12).
+MIX_CACHE_VERSION = 2
 SCOPE = "playlist-read-private playlist-modify-private playlist-modify-public"
 
 
@@ -86,12 +100,73 @@ def _client():
     return spotipy.Spotify(auth=tok["access_token"])
 
 
-def _cached_playlists():
-    """The app's 1-row playlist_cache blob: every playlist with name + track total."""
+# ------------------------------------------------------- playlist_cache (shared)
+# The app's single-row `playlist_cache` blob is how every source token gets
+# resolved to an id. The skill used to only read it, which meant a playlist the
+# skill created was invisible to the skill until someone opened the web app
+# (issue #13) — so `create` now appends to it, and `refresh-cache` can rewrite it
+# outright. Safe to write: the blob is regenerable by design (cli.py backup skips
+# it), and the app's own TTL tiers compare its length against Spotify's playlist
+# total, so appending a real new playlist keeps that check consistent rather than
+# breaking it.
+
+def _read_playlist_cache():
+    """The blob as a list, or None when the row is absent/unreadable. Non-fatal."""
     row = _db().execute("SELECT data FROM playlist_cache LIMIT 1").fetchone()
     if not row:
-        sys.exit("playlist_cache is empty. Open the app's Manage page once to populate it.")
-    return json.loads(row[0])
+        return None
+    try:
+        return json.loads(row[0])
+    except ValueError:
+        return None
+
+
+def _write_playlist_cache(playlists, user_id):
+    """Replace the blob and bump updated_at, keeping it to the one row the app expects.
+
+    Prefers the row already keyed to `user_id`; failing that it rewrites whichever
+    single row exists (re-keying it) so a user_id mismatch can't leave two rows for
+    `_read_playlist_cache`'s LIMIT 1 to choose between. Single-user app by design.
+    """
+    db = _db()
+    now = datetime.now().isoformat(sep=" ")
+    data = json.dumps(playlists, ensure_ascii=False)
+    row = (db.execute("SELECT id FROM playlist_cache WHERE user_id=?", (user_id,)).fetchone()
+           or db.execute("SELECT id FROM playlist_cache LIMIT 1").fetchone())
+    if row:
+        db.execute("UPDATE playlist_cache SET user_id=?, data=?, updated_at=? WHERE id=?",
+                   (user_id, data, now, row[0]))
+    else:
+        db.execute("INSERT INTO playlist_cache (user_id, data, updated_at) VALUES (?,?,?)",
+                   (user_id, data, now))
+    db.commit()
+
+
+def _cache_upsert_playlist(pl, user_id, track_total=None):
+    """Put a just-created/just-rewritten playlist into the blob. Returns the new length.
+
+    The create/replace response already carries the playlist object, so this closes
+    the loop with no extra API call. `track_total` overrides the object's own count,
+    which reads 0 straight out of `user_playlist_create` (tracks are added after).
+    Newest goes first, matching how Spotify paginates a library.
+    """
+    pls = _read_playlist_cache() or []
+    entry = dict(pl)
+    if track_total is not None:
+        entry["tracks"] = dict(entry.get("tracks") or {}, total=track_total)
+    pls = [entry] + [p for p in pls if p.get("id") != entry.get("id")]
+    _write_playlist_cache(pls, user_id)
+    return len(pls)
+
+
+def _cached_playlists():
+    """The app's 1-row playlist_cache blob: every playlist with name + track total."""
+    pls = _read_playlist_cache()
+    if pls is None:
+        sys.exit("playlist_cache is empty or unreadable. Run "
+                 "`mix_helper.py refresh-cache` to rebuild it from Spotify "
+                 "(or open the app's Manage page once).")
+    return pls
 
 
 def _cooldown_days():
@@ -158,7 +233,8 @@ def _resolve(source, by_id, by_name):
         return by_id[source], source  # (name, id) — match the name-branch order
     hits = [(n, i) for n, i in by_name.items() if source.lower() in n.lower()]
     if not hits:
-        sys.exit(f"No playlist matches {source!r}.")
+        sys.exit(f"No playlist matches {source!r}. If it's new or was renamed, run "
+                 f"`mix_helper.py refresh-cache` to re-read your library.")
     if len(hits) > 1:
         exact = [(n, i) for n, i in hits if n.lower() == source.lower()]
         if len(exact) == 1:
@@ -168,13 +244,41 @@ def _resolve(source, by_id, by_name):
     return hits[0]
 
 
-def _fetch_tracks_rich(sp, pid):
-    """Every track for a playlist as a rich dict (uri/name/artist/album/pop).
+def _release_year(release_date):
+    """Year as an int from Spotify's `release_date`, or None if absent/odd.
 
-    playlist_items returns full track objects, so popularity and album ride along
-    with no extra API calls. This is the single source of truth for a track pull;
-    the (uri, name, artist) tuple form is derived from it, so both the `tracks`
-    and `roster` commands share one cache file per playlist.
+    The field's precision varies ('1994', '1994-09', '1994-09-27'), but the year
+    is always the leading four characters when it's there at all.
+    """
+    if not release_date:
+        return None
+    head = str(release_date)[:4]
+    return int(head) if head.isdigit() else None
+
+
+def _mmss(ms):
+    """A track's runtime as m:ss."""
+    secs = round((ms or 0) / 1000)
+    return f"{secs // 60}:{secs % 60:02d}"
+
+
+def _hhmm(ms):
+    """A total runtime as 1h23m (or 23m under the hour) — for the roster footer."""
+    mins = round((ms or 0) / 1000) // 60
+    h, m = divmod(mins, 60)
+    return f"{h}h{m:02d}m" if h else f"{m}m"
+
+
+def _fetch_tracks_rich(sp, pid):
+    """Every track for a playlist as a rich dict — see MIX_CACHE_VERSION for the shape.
+
+    playlist_items returns full track objects, so popularity, album, runtime,
+    release date and the explicit flag all ride along with no extra API calls.
+    Caching them (issue #12) is what keeps mix sizing ("make it ~3 hours") and
+    era/explicit filtering offline instead of costing an `sp.tracks()` pass per
+    mix. This is the single source of truth for a track pull; the
+    (uri, name, artist) tuple form is derived from it, so both the `tracks` and
+    `roster` commands share one cache file per playlist.
     """
     out = []
     res = sp.playlist_items(pid, additional_types=["track"], limit=100)
@@ -190,6 +294,9 @@ def _fetch_tracks_rich(sp, pid):
                     "album_id": alb.get("id") or "single",
                     "album": alb.get("name") or "",
                     "pop": t.get("popularity", 0) or 0,
+                    "duration_ms": t.get("duration_ms") or 0,
+                    "year": _release_year(alb.get("release_date")),
+                    "explicit": bool(t.get("explicit")),
                 })
         res = sp.next(res) if res.get("next") else None
     return out
@@ -224,6 +331,7 @@ def _write_cache(pid, snapshot_id, tracks):
     """Write the track pull atomically (tmp + replace) so a crash can't corrupt it."""
     os.makedirs(MIX_CACHE_DIR, exist_ok=True)
     blob = {
+        "version": MIX_CACHE_VERSION,
         "snapshot_id": snapshot_id,
         "fetched_at": datetime.now().isoformat(sep=" "),
         "tracks": tracks,
@@ -246,11 +354,16 @@ def _fetch_tracks_rich_cached(sp, pid, use_cache=True):
     `playlist_items` calls. use_cache=False (the `--no-cache` escape hatch) skips
     the disk read and forces a live pull, but still rewrites the cache so the next
     normal run is fresh.
+
+    A hit also requires the blob's schema `version` to match MIX_CACHE_VERSION, so
+    entries written before a field was added re-pull silently instead of handing
+    back rows missing it.
     """
     live = _snapshot_id(sp, pid)
     if use_cache and live is not None:
         cached = _read_cache(pid)
-        if cached and cached.get("snapshot_id") == live:
+        if (cached and cached.get("snapshot_id") == live
+                and cached.get("version") == MIX_CACHE_VERSION):
             return cached["tracks"]
     tracks = _fetch_tracks_rich(sp, pid)
     if live is not None:
@@ -299,6 +412,51 @@ def _band_select(album_tracks, skip_top, per_album, top_mode):
         return album_tracks[:]
     skip = max(0, min(skip_top, n - per_album))
     return album_tracks[skip:skip + per_album]
+
+
+def _validate_filters(args):
+    """Fail fast on an impossible filter window instead of returning an empty roster.
+
+    A silently-empty result reads as "the library has nothing like that", which is a
+    much more expensive wrong conclusion than an error message.
+    """
+    for flag, val in (("--pop-min", args.pop_min), ("--pop-max", args.pop_max)):
+        if val is not None and not 0 <= val <= 100:
+            sys.exit(f"{flag} must be 0-100 (Spotify's popularity scale); got {val}.")
+    if (args.pop_min is not None and args.pop_max is not None
+            and args.pop_min > args.pop_max):
+        sys.exit(f"--pop-min {args.pop_min} is above --pop-max {args.pop_max} — nothing can match.")
+    if args.year_min and args.year_max and args.year_min > args.year_max:
+        sys.exit(f"--year-min {args.year_min} is above --year-max {args.year_max} — "
+                 "nothing can match.")
+
+
+# Filter labels, in the order _filter_reason tests them — also the stderr report order.
+_FILTER_REASONS = ("era", "explicit", "pop")
+
+
+def _filter_reason(t, args):
+    """Why this candidate is excluded ("era"/"explicit"/"pop"), or None to keep it.
+
+    All three read straight off the cached fields (issues #12, #14) — no API calls,
+    and applied *after* band/`--top` selection so they narrow the chosen cuts rather
+    than changing which cuts an album offers. A track with no known release year is
+    dropped by either year bound rather than assumed in range: an era brief wants
+    certainty, not guesses.
+    """
+    yr = t.get("year")
+    if args.year_min and (yr is None or yr < args.year_min):
+        return "era"
+    if args.year_max and (yr is None or yr > args.year_max):
+        return "era"
+    if args.no_explicit and t.get("explicit"):
+        return "explicit"
+    pop = t.get("pop") or 0
+    if args.pop_min is not None and pop < args.pop_min:
+        return "pop"
+    if args.pop_max is not None and pop > args.pop_max:
+        return "pop"
+    return None
 
 
 def _annotate_tags(rows, lookup):
@@ -543,6 +701,7 @@ def cmd_roster(args):
     bigger *roster* of the good-but-not-obvious cuts (default) so a mix has
     surprise, or the bangers (`--top`) for albums you want to lead with hits.
     """
+    _validate_filters(args)
     pls = _cached_playlists()
     by_id = {p["id"]: p["name"] for p in pls}
     by_name = {p["name"]: p["id"] for p in pls}
@@ -568,6 +727,7 @@ def cmd_roster(args):
 
     seen = set()
     rows = []
+    excluded = dict.fromkeys(_FILTER_REASONS, 0)
     for src in args.sources:
         name, pid = _resolve(src, by_id, by_name)
         # bucket this source's tracks by album, in first-seen order
@@ -592,6 +752,10 @@ def cmd_roster(args):
                 if args.fresh and frozen:
                     continue
                 if args.thawed and (days is None or frozen):
+                    continue
+                reason = _filter_reason(t, args)
+                if reason:
+                    excluded[reason] += 1
                     continue
                 seen.add(t["uri"])
                 t = dict(t, ice=label, frozen=frozen, days=days, source=name)
@@ -630,13 +794,29 @@ def cmd_roster(args):
         print(f"# tags: {resolved}/{total} artists resolved ({unknown} unknown to Last.fm)",
               file=sys.stderr)
 
+    total_ms = sum(t.get("duration_ms") or 0 for t in rows)
+    # Filter notes go to stderr in both modes (like --tags) — a --json caller wants
+    # to know the era filter ate half the pool just as much as a text one does.
+    notes = {
+        "era": "outside the year range (unknown year counts as out)",
+        "explicit": "flagged explicit",
+        "pop": "outside the popularity band",
+    }
+    for reason in _FILTER_REASONS:
+        if excluded[reason]:
+            print(f"# excluded {excluded[reason]} track(s) {notes[reason]}", file=sys.stderr)
+
     if args.json:
         print(json.dumps(rows, ensure_ascii=False, indent=2))
         return
     for t in rows:
         tagstr = f"  [{', '.join(t['tags'])}]" if t.get("tags") else ""
-        print(f"{t['pop']:>3}  {t['ice']:>5}  {t['uri']}  {t['name']} — {t['artist']}  ({t['album']}){tagstr}")
+        year = f" · {t['year']}" if t.get("year") else ""
+        exp = "  [E]" if t.get("explicit") else ""
+        print(f"{t['pop']:>3}  {t['ice']:>5}  {_mmss(t.get('duration_ms')):>5}  {t['uri']}  "
+              f"{t['name']} — {t['artist']}  ({t['album']}{year}){exp}{tagstr}")
     print(f"# {len(rows)} candidates from {len(args.sources)} source(s); "
+          f"runtime {_hhmm(total_ms)}; "
           f"mode={'top' if args.top else 'band'}, cooldown={cooldown_days}d", file=sys.stderr)
 
 
@@ -777,6 +957,13 @@ def cmd_create(args):
         usage = f" + usage×{len(source_ids)}" if source_ids else ""
         print(f"recorded to created_playlist{extra}{usage}")
 
+    # Make it resolvable by roster/tracks/--source right away (issue #13) — without
+    # this the skill can create a playlist it then can't use as a source until the
+    # web app next refreshes the blob. Last, so a cache-write hiccup can't cost the
+    # --record bookkeeping above, which matters more.
+    n_cached = _cache_upsert_playlist(pl, uid, track_total=len(uris))
+    print(f"playlist_cache updated ({n_cached} playlists) — usable as a source now")
+
 
 def cmd_replace(args):
     source_ids = _resolve_sources(args.source) if args.source else []
@@ -802,7 +989,7 @@ def cmd_replace(args):
             **({"description": args.desc} if args.desc else {}),
         )
 
-    pl = sp.playlist(pid, fields="external_urls,name")
+    pl = sp.playlist(pid, fields="id,external_urls,name")
     url = pl["external_urls"]["spotify"]
     print(f"REPLACED  {pl['name']}  ({len(uris)} tracks)")
     print(url)
@@ -833,6 +1020,144 @@ def cmd_replace(args):
         extra = " + cooldown" if args.cooldown else ""
         usage = f" + usage×{len(source_ids)}" if source_ids else ""
         print(f"updated created_playlist{extra}{usage}")
+
+    # Keep the blob honest about the new name/count — `replace` takes a raw id, so
+    # the playlist may not be in the cache at all yet (issue #13). Last, for the
+    # same reason as in cmd_create.
+    _cache_upsert_playlist(dict(pl, id=pl.get("id") or pid), sp.me()["id"],
+                           track_total=len(uris))
+
+
+def _cached_pool_tracks():
+    """Every track in every `.mix_cache` file: ((playlist_id, track) pairs, n_stale).
+
+    Purely local — the point of `find-artists` is that it costs no Spotify calls,
+    so this deliberately does NOT re-pull stale-schema files the way
+    `_fetch_tracks_rich_cached` would; a pre-v2 blob is read as-is and its tracks
+    simply lack duration/year. `n_stale` counts those pools so the caller can say
+    so rather than rendering a missing runtime as a plausible-looking `0:00`.
+    """
+    out, stale = [], 0
+    for path in sorted(glob.glob(os.path.join(MIX_CACHE_DIR, "*.json"))):
+        pid = os.path.splitext(os.path.basename(path))[0]
+        try:
+            with open(path, encoding="utf-8") as fh:
+                blob = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if blob.get("version") != MIX_CACHE_VERSION:
+            stale += 1
+        for t in blob.get("tracks") or []:
+            out.append((pid, t))
+    return out, stale
+
+
+def cmd_find_artists(args):
+    """Sweep the cached pools for a roster of artists — offline, no Spotify calls.
+
+    Answers "does the library contain any of these N artists?", which name-based
+    `sources --search` can't: pools are named things like `Broken Metric Stars`,
+    which says nothing about its contents. `--missing` is the genuinely useful
+    half — it tells you whether a themed mix is buildable at all.
+
+    Matching is deliberately substring-on-the-cached-`artist`-field: punctuation and
+    acronym names ('!!!', 'CSS') resolve badly through Spotify's artist search, and
+    this sidesteps it entirely.
+    """
+    names = list(args.names or [])
+    if args.file:
+        with open(args.file, encoding="utf-8") as fh:
+            names += [ln.strip() for ln in fh
+                      if ln.strip() and not ln.lstrip().startswith("#")]
+    names = list(dict.fromkeys(names))  # de-dupe, preserve order
+    if not names:
+        sys.exit("Give at least one artist name, or --file with one name per line.")
+
+    pool_names = {p["id"]: p["name"] for p in (_read_playlist_cache() or [])}
+    pairs, n_stale = _cached_pool_tracks()
+    pools_seen = {pid for pid, _ in pairs}
+
+    # One pass over the cache per run, not per name: bucket every match by the query
+    # that found it, deduping a track that appears in several pools while keeping the
+    # list of pools it came from.
+    found = {n: {} for n in names}
+    lowered = [(n, n.lower()) for n in names]
+    for pid, t in pairs:
+        artist = (t.get("artist") or "").lower()
+        if not artist:
+            continue
+        for name, needle in lowered:
+            if needle in artist:
+                hit = found[name].setdefault(t["uri"], dict(t, pools=[]))
+                pool = pool_names.get(pid, pid)
+                if pool not in hit["pools"]:
+                    hit["pools"].append(pool)
+
+    missing = [n for n in names if not found[n]]
+
+    if args.missing:
+        if args.json:
+            print(json.dumps(missing, ensure_ascii=False, indent=2))
+        else:
+            for n in missing:
+                print(n)
+        print(f"# {len(missing)}/{len(names)} name(s) absent from {len(pools_seen)} cached pool(s)",
+              file=sys.stderr)
+        return
+
+    results = []
+    for name in names:
+        hits = sorted(found[name].values(), key=lambda r: -(r.get("pop") or 0))
+        results.append({"name": name, "hits": len(hits),
+                        "tracks": hits[:args.top] if args.top else hits})
+
+    if args.json:
+        print(json.dumps(results, ensure_ascii=False, indent=2))
+    else:
+        for r in results:
+            if not r["hits"]:
+                print(f"{r['name']} — no hits")
+                continue
+            pools = {p for t in r["tracks"] for p in t["pools"]}
+            print(f"{r['name']} — {r['hits']} track(s), {len(pools)} pool(s)")
+            for t in r["tracks"]:
+                year = f" · {t['year']}" if t.get("year") else ""
+                # A pre-v2 blob has no duration at all — show that, don't render it
+                # as 0:00, which reads as a real zero-length track.
+                dur = _mmss(t["duration_ms"]) if "duration_ms" in t else "—"
+                where = t["pools"][0] + (f" +{len(t['pools']) - 1}" if len(t["pools"]) > 1 else "")
+                print(f"  {t.get('pop') or 0:>3}  {dur:>5}  {t['uri']}  "
+                      f"{t['name']} — {t['artist']}  ({t.get('album', '')}{year})  [{where}]")
+
+    hit_names = len(names) - len(missing)
+    print(f"# {hit_names}/{len(names)} name(s) found across {len(pools_seen)} cached pool(s); "
+          f"uncached pools are invisible — a nil result means \"not in any pool pulled so far\", "
+          f"not \"not in the library\"", file=sys.stderr)
+    if n_stale:
+        print(f"# {n_stale} pool(s) still on an older cache schema — their rows show no "
+              f"runtime/year until a roster re-pulls them", file=sys.stderr)
+    if missing:
+        print(f"# missing: {', '.join(missing)}", file=sys.stderr)
+
+
+def cmd_refresh_cache(args):
+    """Rebuild the app's playlist_cache from Spotify (issue #13).
+
+    The Flask app is otherwise the only writer, on a TTL — so after the app has
+    been closed a while the blob goes stale and newly made playlists can't be
+    resolved as sources. This is the skill's own way to unstick it.
+    """
+    sp = _client()
+    uid = sp.me()["id"]
+    pls = []
+    res = sp.current_user_playlists(limit=50)
+    while res:
+        pls.extend(res["items"])
+        res = sp.next(res) if res.get("next") else None
+    if not pls:
+        sys.exit("Spotify returned no playlists — leaving the existing cache alone.")
+    _write_playlist_cache(pls, uid)
+    print(f"playlist_cache refreshed — {len(pls)} playlists for {uid}")
 
 
 def _extract_track_uri(tok):
@@ -952,6 +1277,19 @@ def main():
                     help="only tracks you've played before but are now off ice (throwbacks)")
     ro.add_argument("--show-iced", action="store_true",
                     help="reveal ice-boxed tracks (🧊 column) instead of hiding them")
+    ro.add_argument("--year-min", type=int, default=0, metavar="YYYY",
+                    help="only tracks whose album released in this year or later "
+                         "(unknown release year is treated as out of range)")
+    ro.add_argument("--year-max", type=int, default=0, metavar="YYYY",
+                    help="only tracks whose album released in this year or earlier "
+                         "(unknown release year is treated as out of range)")
+    ro.add_argument("--no-explicit", action="store_true",
+                    help="drop tracks Spotify flags explicit")
+    ro.add_argument("--pop-min", type=int, default=None, metavar="N",
+                    help="popularity floor, 0-100 (composes with --top / band mode)")
+    ro.add_argument("--pop-max", type=int, default=None, metavar="N",
+                    help="popularity ceiling, 0-100 — '--top --pop-max 70' is "
+                         "\"each album's biggest track, minus the ubiquitous ones\"")
     ro.add_argument("--sample", type=int, default=0, help="randomly keep N of the candidates (0 = all)")
     ro.add_argument("--seed", type=int, default=None, help="seed for --sample (reproducible)")
     ro.add_argument("--no-cache", action="store_true",
@@ -1001,6 +1339,21 @@ def main():
                    help="a source playlist (id or name substring) this mix drew from; "
                         "with --record, bumps its use_count like a web build. Repeatable.")
     r.set_defaults(func=cmd_replace)
+
+    rc = sub.add_parser("refresh-cache",
+                        help="re-read your Spotify library into the app's playlist_cache")
+    rc.set_defaults(func=cmd_refresh_cache)
+
+    fa = sub.add_parser("find-artists",
+                        help="sweep the cached pools for a roster of artists (offline)")
+    fa.add_argument("names", nargs="*", help="artist names (case-insensitive substring)")
+    fa.add_argument("--file", help="file of artist names, one per line ('#' comments ok)")
+    fa.add_argument("--top", type=int, default=3,
+                    help="tracks to show per matched artist, by popularity (0 = all)")
+    fa.add_argument("--missing", action="store_true",
+                    help="list ONLY the names with no hits — what the library lacks")
+    fa.add_argument("--json", action="store_true")
+    fa.set_defaults(func=cmd_find_artists)
 
     i = sub.add_parser("ice", help="manual ice box: never-list / timed freeze, shared with the app")
     i.add_argument("action", choices=["add", "list", "thaw"])

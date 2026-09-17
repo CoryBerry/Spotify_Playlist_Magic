@@ -25,7 +25,7 @@ sections it leaves empty.
 Two kinds of content live there, and the distinction is load-bearing:
 
 - **Live-read, hand-authored** — `CONTEXT.md`, `playlists.md`, `notes/`. The point of the overlay.
-- **Mirrors, script-written** — `memory/` (copy of `~/.claude/projects/C--dev-claudone/memory/`),
+- **Mirrors, script-written** — `memory/` (copy of `~/.claude/projects/C--dev-crate/memory/`),
   `backups/spotify_tools.sql` (DB dump), `cache/` (friend profile pulls). Never hand-edit these;
   the next sync overwrites them. `~/.claude` stays authoritative for memory.
 
@@ -87,7 +87,8 @@ IDEAS.md            ← feature backlog
 
 ```python
 PlaylistTag       # user-applied tags on Spotify playlists (unique per playlist+tag)
-PlaylistCache     # 1-hour cache of Spotify playlist list (falls back to stale on timeout)
+PlaylistCache     # cached Spotify playlist list, 15min/24h TTL tiers (falls back to stale on timeout);
+                  # also written by the mix skill's `create` / `refresh-cache` — regenerable by design
 CreatedPlaylist   # history of every Block Mix / Album Blast created (alive/checked_at, gen_seconds, track_count)
 PlaylistUsage     # use_count + last_used per playlist+provider — drives "most used" sort
 TrackHistory      # track_id + used_at — 7-day cooldown pool to avoid replaying recent tracks
