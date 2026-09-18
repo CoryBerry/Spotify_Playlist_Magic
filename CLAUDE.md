@@ -60,7 +60,8 @@ app.py              ← Flask routes, models, and web-specific helpers
 spotify_service.py  ← Spotify search/matching (_name_sim, _search_line) + resolve_tracks /
                       create_playlist_from_lines — one source of truth, shared with the CLI
 feed_service.py     ← Feed Radar: Firecrawl scrape + "Artist – Title" extraction (pure, unit-tested)
-lastfm_service.py   ← Last.fm per-artist tag lookups (used by the mix skill's roster --tags)
+lastfm_service.py   ← Last.fm reads: per-artist tags (roster --tags) + LASTFM_USER-scoped
+                      scrobbles/loves (roster --mine). Key-only auth; TTL'd cache for user data
 cli.py              ← headless, prompt-free CLI (login / resolve / build) over spotify_service
 templates/
   base.html         ← shared layout (Bootstrap, nav, cache footer)

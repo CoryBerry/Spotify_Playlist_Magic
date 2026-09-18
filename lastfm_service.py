@@ -50,6 +50,18 @@ def get_api_key() -> str:
     return key
 
 
+def get_user() -> str:
+    """The scrobbling username the user-scoped reads run against.
+
+    Separate from ``get_api_key`` because it's a separate failure: a valid key with no
+    ``LASTFM_USER`` can still answer every artist/track read, just nothing personal.
+    """
+    user = os.environ.get("LASTFM_USER")
+    if not user:
+        raise LastfmError("Missing LASTFM_USER. Check your .env.")
+    return user
+
+
 def _load_cache(path: str) -> dict:
     try:
         with open(path, "r", encoding="utf-8") as fh:
@@ -70,11 +82,18 @@ def _call(
     use_cache: bool = True,
     cache_path: Optional[str] = None,
     timeout: int = 15,
+    ttl: Optional[int] = None,
 ) -> dict:
     """Call a Last.fm read method, returning the parsed JSON body.
 
     Raises LastfmError on a Last.fm-level error (``{"error": N, "message": ...}``) or a
     network/HTTP failure. Successful responses are memoized by (method, sorted params).
+
+    ``ttl`` (seconds) marks a response as *perishable*. Artist/track facts are stable and
+    cache forever (``ttl=None``, stored bare). A user's own scrobble counts change daily, so
+    the user-scoped reads pass a TTL and are stored timestamp-wrapped; an expired entry is a
+    miss. Both shapes coexist in one file — legacy bare entries simply never satisfy a
+    TTL'd read.
     """
     cache_path = cache_path or DEFAULT_CACHE
     # Cache key excludes the API key so the file is shareable and stable.
@@ -82,7 +101,13 @@ def _call(
 
     cache = _load_cache(cache_path) if use_cache else {}
     if use_cache and ck in cache:
-        return cache[ck]
+        hit = cache[ck]
+        wrapped = isinstance(hit, dict) and "_ts" in hit and "_body" in hit
+        if ttl is None:
+            if not wrapped:
+                return hit
+        elif wrapped and (time.time() - hit["_ts"]) < ttl:
+            return hit["_body"]
 
     query = dict(params)
     query.update(method=method, api_key=get_api_key(), format="json")
@@ -98,7 +123,7 @@ def _call(
         raise LastfmError(f"Last.fm error {body['error']}: {body.get('message', '')}")
 
     if use_cache:
-        cache[ck] = body
+        cache[ck] = body if ttl is None else {"_ts": time.time(), "_body": body}
         _save_cache(cache, cache_path)
     return body
 
@@ -172,23 +197,154 @@ def artist_top_tags(name: str, limit: int = 10, *, use_cache: bool = True) -> li
     return out[:limit]
 
 
-def track_info(artist: str, title: str, *, use_cache: bool = True) -> Optional[dict]:
-    """Return {name, artist, listeners, playcount, tags: [str]} for a track, or None."""
+def track_info(
+    artist: str,
+    title: str,
+    *,
+    username: Optional[str] = None,
+    use_cache: bool = True,
+) -> Optional[dict]:
+    """Return {name, artist, listeners, playcount, tags: [str]} for a track, or None.
+
+    Pass ``username`` to additionally get that user's own relationship to the track as
+    ``user_playcount`` and ``loved``. This is one call *per track*, so it's the expensive way
+    to read a personal signal — prefer the bulk ``user_top_tracks`` / ``user_loved_tracks``
+    reads and fall back here only for specific misses.
+    """
+    params = {"artist": artist, "track": title, "autocorrect": "1"}
+    if username:
+        params["username"] = username
     try:
         body = _call(
             "track.getinfo",
-            {"artist": artist, "track": title, "autocorrect": "1"},
+            params,
             use_cache=use_cache,
+            ttl=_USER_TTL if username else None,
         )
     except LastfmError:
         return None
     t = body.get("track")
     if not t:
         return None
-    return {
+    out = {
         "name": t.get("name", title),
         "artist": (t.get("artist") or {}).get("name", artist),
         "listeners": int(t.get("listeners") or 0),
         "playcount": int(t.get("playcount") or 0),
         "tags": [g["name"] for g in _as_list((t.get("toptags") or {}).get("tag")) if g.get("name")],
     }
+    if username:
+        out["user_playcount"] = int(t.get("userplaycount") or 0)
+        out["loved"] = str(t.get("userloved") or "0") == "1"
+    return out
+
+
+# ---------------------------------------------------------------------------
+# User-scoped reads (LASTFM_USER) — the personal signal
+# ---------------------------------------------------------------------------
+# Still key-only auth: a user's scrobbles and loves are public reads, so these need no signed
+# session. What they *do* need is a TTL — unlike an artist's tags, these change every time
+# Cory plays something.
+
+_USER_TTL = 12 * 3600  # 12h — scrobble counts drift daily, not hourly
+_PAGE_LIMIT = 1000     # Last.fm's per-page ceiling for these methods
+
+
+def _paged(
+    method: str,
+    root: str,
+    node: str,
+    params: dict[str, Any],
+    *,
+    max_pages: int,
+    use_cache: bool,
+) -> list[dict]:
+    """Walk a paged Last.fm list method, returning the concatenated item dicts.
+
+    Stops at ``max_pages``, at the reported ``totalPages``, or at the first short/empty page —
+    whichever comes first. A failure mid-walk returns what was collected rather than raising,
+    so a flaky page degrades to a partial signal instead of killing the caller.
+    """
+    items: list[dict] = []
+    page = 1
+    while page <= max_pages:
+        try:
+            body = _call(
+                method,
+                dict(params, limit=str(_PAGE_LIMIT), page=str(page)),
+                use_cache=use_cache,
+                ttl=_USER_TTL,
+            )
+        except LastfmError:
+            break
+        container = body.get(root) or {}
+        batch = _as_list(container.get(node))
+        items.extend(b for b in batch if isinstance(b, dict))
+        try:
+            total_pages = int((container.get("@attr") or {}).get("totalPages") or 1)
+        except (TypeError, ValueError):
+            total_pages = 1
+        if len(batch) < _PAGE_LIMIT or page >= total_pages:
+            break
+        page += 1
+    return items
+
+
+def user_top_tracks(
+    user: Optional[str] = None,
+    *,
+    period: str = "overall",
+    max_pages: int = 5,
+    use_cache: bool = True,
+) -> list[dict]:
+    """The user's most-scrobbled tracks: [{artist, title, playcount}], most-played first.
+
+    ``period`` is Last.fm's window vocabulary (``overall`` / ``7day`` / ``1month`` /
+    ``3month`` / ``6month`` / ``12month``). Defaults to ``overall`` — durable taste.
+    """
+    user = user or get_user()
+    rows = _paged(
+        "user.gettoptracks",
+        "toptracks",
+        "track",
+        {"user": user, "period": period},
+        max_pages=max_pages,
+        use_cache=use_cache,
+    )
+    out = []
+    for t in rows:
+        name = t.get("name")
+        artist = (t.get("artist") or {}).get("name")
+        if not name or not artist:
+            continue
+        try:
+            plays = int(t.get("playcount") or 0)
+        except (TypeError, ValueError):
+            plays = 0
+        out.append({"artist": artist, "title": name, "playcount": plays})
+    return out
+
+
+def user_loved_tracks(
+    user: Optional[str] = None,
+    *,
+    max_pages: int = 5,
+    use_cache: bool = True,
+) -> list[dict]:
+    """The user's explicitly loved tracks: [{artist, title}]."""
+    user = user or get_user()
+    rows = _paged(
+        "user.getlovedtracks",
+        "lovedtracks",
+        "track",
+        {"user": user},
+        max_pages=max_pages,
+        use_cache=use_cache,
+    )
+    out = []
+    for t in rows:
+        name = t.get("name")
+        artist = (t.get("artist") or {}).get("name")
+        if name and artist:
+            out.append({"artist": artist, "title": name})
+    return out

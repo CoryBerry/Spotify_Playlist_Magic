@@ -113,6 +113,44 @@ Knobs:
   Each distinct artist is fetched once per run and reuses `lastfm_service`'s `.lastfm_cache.json`, so
   repeat rosters are cheap. **Needs `LASTFM_API_KEY`** in `.env` — `--tags` hard-fails without it;
   individual artists unknown to Last.fm just come back tagless (a stderr line reports how many resolved).
+- `--mine` — annotate each candidate with **Cory's own Last.fm signal**: whether he's *loved* the
+  track and how many times he's scrobbled it. Shows as a column in the left gutter beside
+  popularity/cooldown — `♥42` loved (with playcount), bare `17` scrobbled but not loved, `·` no
+  personal signal — and as `"mine": {"loved": bool, "playcount": int|null}` in `--json`.
+  Opt-in; plain `roster` stays offline. **Needs `LASTFM_API_KEY` *and* `LASTFM_USER`** in `.env`
+  — hard-fails without either.
+
+  **This is the personal counterweight to `pop`.** Spotify's `popularity` is *global* and a
+  negative signal here; `--mine` is Cory's actual listening, so it reads the other way — a
+  low-`pop` track carrying `♥` or a fat playcount is a deep cut *he loves*, which is the whole
+  target. Use it to break ties in a roster, not to rank one: it's **annotation only**, with no
+  sort or filter of its own.
+
+  **`--mine` is the only *listening* signal this tool has.** Don't confuse it with the cooldown
+  column beside it: `❄Nd` / `~Nd` come from `track_history`, which records tracks **this skill
+  put into a build** — not tracks Cory played. So `--thawed` means *"was in a past mix, now off
+  cooldown"*, and on a source that's never been built from it correctly returns nothing. The two
+  columns answer different questions, which is what makes them useful together:
+
+  | `mine` | cooldown | reading |
+  |---|---|---|
+  | `♥` / high | `·` | a favorite the mixes have **never** used — the best find on the page |
+  | `♥` / high | `❄Nd` | loved, but a recent build already spent it — leave it |
+  | `·` | `·` | unknown quantity; lean on `pop`, tags and taste |
+
+  Good combinations: `--mine --pop-max 50` (personal favorites that never went mainstream),
+  `--mine --fresh` (annotate only what's buildable right now).
+
+  Beware the obvious trap: **a huge playcount also means "heard to death."** A `♥` on something
+  he's played 400 times is a candidate for the ice box, not the mix. Read the column as *taste
+  evidence*, then judge freshness separately — and note that nothing else in the tool knows he
+  wore a track out, because the cooldown columns only see builds.
+
+  Two bulk reads per run (top tracks + loved), not one call per track, cached 12h in
+  `.lastfm_cache.json`. The scrobble read covers his top 5000 tracks — ordered by playcount, so
+  the cap only ever trims the played-once tail. Matching is name-normalized on both sides
+  (accents, `(Remastered)`, `- 2019 Remix`, `feat.`, punctuation); unmatched tracks silently get
+  no marker, and a stderr line reports how many candidates carried a signal.
 
 Each row carries its **runtime** (`m:ss`), **release year** (after the album name) and an
 `[E]` marker when explicit; the stderr footer totals the roster's runtime (`runtime 2h57m`).
@@ -339,5 +377,5 @@ is data wrangling, not a one-shot prompt. Gotchas learned the hard way:
   name substring; ambiguous names error out — use a fuller name or the id. A name (or id) that
   matches *nothing* usually means a stale `playlist_cache` — run `refresh-cache`.
 - Keep it simple; this mirrors existing app conventions (see `CLAUDE.md`). No new deps —
-  it reuses `spotipy`, `python-dotenv`, and the SQLite DB the app already uses; `--tags` reuses the
-  repo's own `lastfm_service` (stdlib-only, no extra pip packages).
+  it reuses `spotipy`, `python-dotenv`, and the SQLite DB the app already uses; `--tags` and
+  `--mine` reuse the repo's own `lastfm_service` (stdlib-only, no extra pip packages).
