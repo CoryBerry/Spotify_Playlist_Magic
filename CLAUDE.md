@@ -196,14 +196,27 @@ FeedItem          # Feed Radar review queue: one row per (source, harvested line
 
 ## Agent skills
 
-### mix / profile (Spotify curation pair)
+### mix / profile / albums (Spotify curation trio)
 
 `.claude/skills/mix/` builds and ships playlists from Cory's own library;
 `.claude/skills/profile/` reads a *friend's* public playlists into a taste profile
-saved to agent memory, which the mix skill then builds against. Both follow the same
-split — a `*_helper.py` owning all plumbing, a `SKILL.md` owning the judgment — and
-`profile_helper` imports `mix_helper._client()` so there is one Spotify auth path.
-Run both with `PYTHONUTF8=1` from the repo root. Tests: `python -m pytest .claude/skills/`.
+saved to agent memory, which the mix skill then builds against;
+`.claude/skills/albums/` builds **whole-album source pools** from the Spotify catalog —
+chronological discographies and scene surveys like `Albums - Dance-Punk I/II/III`.
+All three follow the same split — a `*_helper.py` owning all plumbing, a `SKILL.md`
+owning the judgment — and `profile_helper` / `albums_helper` import
+`mix_helper._client()` so there is one Spotify auth path.
+Run them with `PYTHONUTF8=1` from the repo root. Tests: `python -m pytest .claude/skills/`.
+
+`albums_helper` never writes to Spotify: it decides which tracks and in what order,
+emits a URI file, and `mix_helper create|replace` ships it — one write path, with
+`created_playlist` recording and `playlist_cache` upsert already solved there. Pools
+are reference material and **never** participate in cooldown (a 170-track discography
+in `track_history` would lock those artists out of real mixes for a week); they are
+`--record`ed but never `--cooldown`ed. The pure decisions — live/remix/compilation
+classification, original-vs-deluxe edition choice, reissue pruning, and tracklist-overlap
+detection of compilations that silently recycle earlier albums — are unit-tested in
+`test_albums.py`.
 
 ### Issue tracker
 
