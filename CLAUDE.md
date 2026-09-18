@@ -1,4 +1,4 @@
-# CLAUDE.md — Spotify Playlist Magic
+# CLAUDE.md — Crate
 
 > Briefing file for Claude Code. Read this before touching anything.
 
