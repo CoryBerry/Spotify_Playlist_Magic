@@ -39,6 +39,7 @@ Examples:
 """
 import argparse
 import glob
+import hashlib
 import json
 import math
 import os
@@ -414,6 +415,31 @@ def _band_select(album_tracks, skip_top, per_album, top_mode):
         return album_tracks[:]
     skip = max(0, min(skip_top, n - per_album))
     return album_tracks[skip:skip + per_album]
+
+
+def _jitter_skip(album_id, base_skip, steps, hi):
+    """Random-walk the band's `skip` so a much-used album drifts off its sweet spot.
+
+    Cory's ask: don't wear out the one deep cut by always picking it. Each prior
+    use of the album (`steps`) is one pure-50/50 ±1 step from the band default
+    (`base_skip`), so a fresh album sits at the sweet spot and a heavily-replayed
+    one has wandered across the tracklist. The coin is a deterministic hash of
+    (album_id, step index), so the same history reproduces the same pick and it
+    only *moves* when the album is genuinely used again. `skip` is allowed all the
+    way up to 0 (the #1 track — "picking top is fine") and the walk reflects at
+    both ends [0, hi] so it keeps roaming instead of parking on an edge.
+    """
+    if hi <= 0 or steps <= 0:
+        return base_skip
+    pos = base_skip
+    for i in range(steps):
+        bit = int(hashlib.sha1(f"{album_id}:{i}".encode()).hexdigest(), 16) & 1
+        pos += 1 if bit else -1
+        if pos < 0:            # reflect off the top edge (rank 0)
+            pos = -pos
+        elif pos > hi:         # reflect off the deep edge
+            pos = 2 * hi - pos
+    return max(0, min(pos, hi))
 
 
 def _validate_filters(args):
@@ -950,6 +976,15 @@ def cmd_roster(args):
     # reveals them labelled with the 🧊 column so you can review before thawing.
     iced_map = {r[0]: r[3] for r in _iced_rows(_db())}
 
+    # --jitter: how many times each track has been used (track_history rows),
+    # summed per album below to drive the band's random walk.
+    hist_counts = {}
+    if args.jitter:
+        for (tid,) in _db().execute(
+            "SELECT track_id FROM track_history WHERE provider='spotify'"
+        ):
+            hist_counts[tid] = hist_counts.get(tid, 0) + 1
+
     def ice_of(uri):
         """(label, frozen, days) — days since last play, or None if never played."""
         lu = last_used.get(uri)
@@ -974,7 +1009,15 @@ def cmd_roster(args):
             albums[t["album_id"]].append(t)
         for aid in order:
             ranked = sorted(albums[aid], key=lambda t: -t["pop"])
-            for t in _band_select(ranked, args.skip_top, args.per_album, args.top):
+            if args.jitter and not args.top and len(ranked) > args.per_album:
+                hi = len(ranked) - args.per_album
+                base_skip = max(0, min(args.skip_top, hi))
+                steps = sum(hist_counts.get(t["uri"], 0) for t in ranked)
+                skip = _jitter_skip(aid, base_skip, steps, hi)
+                selection = ranked[skip:skip + args.per_album]
+            else:
+                selection = _band_select(ranked, args.skip_top, args.per_album, args.top)
+            for t in selection:
                 if t["uri"] in seen:
                     continue
                 if t["uri"] in iced_map:
@@ -1072,9 +1115,10 @@ def cmd_roster(args):
         mine = f"  {_mine_label(t.get('mine')):>5}" if args.mine else ""
         print(f"{t['pop']:>3}  {t['ice']:>5}{mine}  {_mmss(t.get('duration_ms')):>5}  {t['uri']}  "
               f"{t['name']} — {t['artist']}  ({t['album']}{year}){exp}{tagstr}")
+    mode = "top" if args.top else ("band+jitter" if args.jitter else "band")
     print(f"# {len(rows)} candidates from {len(args.sources)} source(s); "
           f"runtime {_hhmm(total_ms)}; "
-          f"mode={'top' if args.top else 'band'}, cooldown={cooldown_days}d", file=sys.stderr)
+          f"mode={mode}, cooldown={cooldown_days}d", file=sys.stderr)
 
 
 def cmd_sequence(args):
@@ -1547,6 +1591,9 @@ def main():
                     help="band mode: skip this many top hits before selecting (default 2)")
     ro.add_argument("--per-artist", type=int, default=0,
                     help="cap tracks per artist across the roster (0 = no cap)")
+    ro.add_argument("--jitter", action="store_true",
+                    help="random-walk each album's band pick by its play history, so a "
+                         "much-used album drifts off its sweet spot (spreads the wear; band mode only)")
     ro.add_argument("--fresh", action="store_true", help="drop tracks still on ice (within cooldown)")
     ro.add_argument("--thawed", action="store_true",
                     help="only tracks you've played before but are now off ice (throwbacks)")

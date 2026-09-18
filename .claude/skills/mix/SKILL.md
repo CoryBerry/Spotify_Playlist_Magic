@@ -85,6 +85,12 @@ Knobs:
   is global streams, which within one album orders the same as "most played.")
 - `--per-album N` (default 3) / `--skip-top N` (default 2) — size and depth of the band.
 - `--per-artist N` — cap one artist from clumping the roster.
+- `--jitter` — random-walk each album's band pick by its play history so a much-used album drifts off
+  its sweet spot (spreads the wear — stops the one loved deep cut from getting picked *every* build).
+  Each prior use (`track_history` row) is one pure-50/50 ±1 step from the band default; a never-played
+  album stays put, a heavily-replayed one wanders across the tracklist (top/rank-0 reachable). The coin
+  is a deterministic hash of (album, step), so it's reproducible and only *moves* when the album is
+  genuinely reused. Band mode only (ignored with `--top`). Opt-in for now.
 - `--year-min YYYY` / `--year-max YYYY` — era filter, off the album's release year
   (`--year-min 1980 --year-max 1999` for an 80s/90s brief). A track whose release date
   Spotify doesn't report is treated as **out** of range, not assumed in — a stderr line
