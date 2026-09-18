@@ -21,8 +21,18 @@
         <option value="most">Most Tracks</option>
         <option value="least">Fewest Tracks</option>
         <option value="owned">Owned First</option>
+        <option value="folder">Folder (A → Z)</option>
         <option value="least-used">Least Used</option>
         <option value="oldest-use">Oldest Use (never first)</option>
+      </select>
+    </div>
+    <div class="col-auto">
+      <select id="folderFilter" class="form-select">
+        <option value="">All folders</option>
+        <option value="__none__">— Unfiled —</option>
+        {% for f in folders %}
+          <option value="{{ f }}">{{ f }}</option>
+        {% endfor %}
       </select>
     </div>
     <div class="col-auto">
@@ -40,6 +50,11 @@
       <button type="button" id="bulkTagBtn" class="btn btn-info btn-sm" disabled>Tag Selected</button>
       <button type="button" id="bulkUntagBtn" class="btn btn-outline-info btn-sm" disabled>Remove Tag</button>
 
+      <!-- Bulk move to folder — blank folder moves the selection out to Unfiled -->
+      <input type="text" id="bulkFolderInput" class="form-control form-control-sm" placeholder="Move to folder..."
+             list="folder-suggestions" style="width: 160px;" disabled>
+      <button type="button" id="bulkMoveBtn" class="btn btn-warning btn-sm" disabled>Move</button>
+
       <button type="button" id="deleteBtn" class="btn btn-danger btn-sm" disabled>Delete Selected (<span id="selectedCount">0</span>)</button>
     </div>
   </div>
@@ -51,6 +66,7 @@
         <tr>
           <th style="width: 40px;"></th>
           <th>Name</th>
+          <th>Folder</th>
           <th>Tags</th>
           <th>Owner</th>
           <th>Tracks</th>
@@ -66,6 +82,7 @@
               data-tracks="{{ playlist.tracks.total }}"
               data-order="{{ loop.index }}"
               data-owned="{{ '1' if playlist.owner.id == user_id else '0' }}"
+              data-folder="{{ folder_map.get(playlist.id, '') }}"
               data-uses="{{ u.use_count if u else 0 }}"
               data-last-used="{{ u.last_used.timestamp() | int if u and u.last_used else 0 }}">
             <td>
@@ -77,6 +94,22 @@
               {% if playlist.tracks.total >= 500 %}
                 <span class="badge bg-warning text-dark ms-1">500+</span>
               {% endif %}
+            </td>
+            <td class="folder-cell" data-playlist-id="{{ playlist.id }}">
+              <div class="folder-label mb-1">
+                {% if folder_map.get(playlist.id) %}
+                  <span class="badge bg-warning text-dark">📁 {{ folder_map[playlist.id] }}
+                    <span class="folder-clear ms-1" style="cursor:pointer;" title="Move out of folder">×</span>
+                  </span>
+                {% else %}
+                  <span class="text-muted small">—</span>
+                {% endif %}
+              </div>
+              <div class="d-flex gap-1">
+                <input type="text" class="form-control form-control-sm folder-input" placeholder="Move to..."
+                       list="folder-suggestions" style="max-width: 130px;">
+                <button type="button" class="btn btn-outline-warning btn-sm folder-set-btn">→</button>
+              </div>
             </td>
             <td class="tag-cell" data-playlist-id="{{ playlist.id }}">
               <div class="d-flex flex-wrap gap-1 align-items-center tag-list">
@@ -126,6 +159,7 @@
 
   <!-- Autocomplete source for tag inputs — populated via JS from /spotify/tags/all -->
   <datalist id="tag-suggestions"></datalist>
+  <datalist id="folder-suggestions"></datalist>
 
   <!-- Confirmation Modal -->
   <div class="modal fade" id="confirmModal" tabindex="-1">
@@ -162,6 +196,9 @@
     const bulkTagInput  = document.getElementById("bulkTagInput");
     const bulkTagBtn    = document.getElementById("bulkTagBtn");
     const bulkUntagBtn  = document.getElementById("bulkUntagBtn");
+    const bulkFolderInput = document.getElementById("bulkFolderInput");
+    const bulkMoveBtn     = document.getElementById("bulkMoveBtn");
+    const folderFilter    = document.getElementById("folderFilter");
     const selectedCount = document.getElementById("selectedCount");
     const visibleCount  = document.getElementById("visibleCount");
     const confirmModal  = new bootstrap.Modal(document.getElementById("confirmModal"));
@@ -180,21 +217,27 @@
       bulkTagInput.disabled     = checked === 0;
       bulkTagBtn.disabled       = checked === 0;
       bulkUntagBtn.disabled     = checked === 0;
+      bulkFolderInput.disabled  = checked === 0;
+      bulkMoveBtn.disabled      = checked === 0;
     }
 
     // Filter
     function applyFilter() {
       const term = filterInput.value.toLowerCase();
+      const fsel = folderFilter.value;
       getRows().forEach(row => {
         const nameMatch  = row.dataset.name.includes(term);
         const usageMatch = !neverUsedMode || parseInt(row.dataset.uses) === 0;
-        const hide = !(nameMatch && usageMatch);
+        const folder     = row.dataset.folder || "";
+        const folderMatch = !fsel || (fsel === "__none__" ? folder === "" : folder === fsel);
+        const hide = !(nameMatch && usageMatch && folderMatch);
         row.classList.toggle("d-none", hide);
-  });
+      });
       updateCounts();
     }
 
     filterInput.addEventListener("input", applyFilter);
+    folderFilter.addEventListener("change", applyFilter);
 
     btnNeverUsed.addEventListener("click", () => {
       neverUsedMode = !neverUsedMode;
@@ -217,6 +260,11 @@
         if (val === "most")  return b.dataset.tracks - a.dataset.tracks;
         if (val === "least") return a.dataset.tracks - b.dataset.tracks;
         if (val === "owned")      return b.dataset.owned - a.dataset.owned;
+        if (val === "folder") {
+          // Unfiled sinks to the bottom; within a folder, fall back to name.
+          const fa = a.dataset.folder || "￿", fb = b.dataset.folder || "￿";
+          return fa === fb ? a.dataset.name.localeCompare(b.dataset.name) : fa.localeCompare(fb);
+        }
         if (val === "least-used") return a.dataset.uses - b.dataset.uses;
         if (val === "oldest-use") return a.dataset.lastUsed - b.dataset.lastUsed;
         return a.dataset.order - b.dataset.order;
@@ -359,6 +407,107 @@
 
     bulkTagBtn.addEventListener("click",   () => bulkTagAction("/spotify/tag/add"));
     bulkUntagBtn.addEventListener("click", () => bulkTagAction("/spotify/tag/remove"));
+
+    // ---------------------------------------------------------------
+    // Folders (local grouping — Spotify's API has no folder endpoints)
+    // ---------------------------------------------------------------
+
+    // Keep the datalist and the filter dropdown in step with the server's folder list.
+    function renderFolderOptions(folders) {
+      const dl = document.getElementById("folder-suggestions");
+      dl.innerHTML = "";
+      folders.forEach(f => {
+        const opt = document.createElement("option");
+        opt.value = f;
+        dl.appendChild(opt);
+      });
+
+      const keep = folderFilter.value;
+      folderFilter.innerHTML = '<option value="">All folders</option><option value="__none__">— Unfiled —</option>';
+      folders.forEach(f => {
+        const opt = document.createElement("option");
+        opt.value = f;
+        opt.textContent = f;
+        folderFilter.appendChild(opt);
+      });
+      // A folder can vanish when its last playlist leaves it — fall back to All.
+      folderFilter.value = folders.includes(keep) || keep === "" || keep === "__none__" ? keep : "";
+    }
+
+    function refreshFolders() {
+      fetch("/spotify/folders/all").then(r => r.json()).then(d => renderFolderOptions(d.folders));
+    }
+    refreshFolders();
+
+    function renderFolder(cell, folder) {
+      const label = cell.querySelector(".folder-label");
+      label.innerHTML = "";
+      if (folder) {
+        const badge = document.createElement("span");
+        badge.className = "badge bg-warning text-dark";
+        badge.textContent = "📁 " + folder + " ";
+        const x = document.createElement("span");
+        x.textContent = "×";
+        x.className = "folder-clear ms-1";
+        x.style.cursor = "pointer";
+        x.title = "Move out of folder";
+        badge.appendChild(x);
+        label.appendChild(badge);
+      } else {
+        const dash = document.createElement("span");
+        dash.className = "text-muted small";
+        dash.textContent = "—";
+        label.appendChild(dash);
+      }
+      cell.closest(".playlist-row").dataset.folder = folder || "";
+    }
+
+    function setFolder(cell, folder) {
+      return fetch("/spotify/folder/set", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({playlist_id: cell.dataset.playlistId, folder})
+      })
+      .then(r => r.json())
+      .then(data => {
+        if (data.error) { alert(data.error); return; }
+        renderFolder(cell, data.folder);
+        renderFolderOptions(data.folders);
+      });
+    }
+
+    // Move via → button, Enter key, or × to unfile
+    body.addEventListener("click", e => {
+      if (e.target.classList.contains("folder-set-btn")) {
+        const cell  = e.target.closest(".folder-cell");
+        const input = cell.querySelector(".folder-input");
+        const folder = input.value.trim().toLowerCase();
+        if (!folder) return;
+        setFolder(cell, folder).then(() => { input.value = ""; applyFilter(); });
+      } else if (e.target.classList.contains("folder-clear")) {
+        const cell = e.target.closest(".folder-cell");
+        setFolder(cell, "").then(applyFilter);
+      }
+    });
+
+    body.addEventListener("keydown", e => {
+      if (e.key !== "Enter" || !e.target.classList.contains("folder-input")) return;
+      e.preventDefault();
+      const cell   = e.target.closest(".folder-cell");
+      const folder = e.target.value.trim().toLowerCase();
+      if (!folder) return;
+      setFolder(cell, folder).then(() => { e.target.value = ""; applyFilter(); });
+    });
+
+    // Bulk move — an empty box moves the selection out to Unfiled.
+    bulkMoveBtn.addEventListener("click", () => {
+      const folder = bulkFolderInput.value.trim().toLowerCase();
+      const rows   = getRows().filter(r => !r.classList.contains("d-none") && r.querySelector(".row-check").checked);
+      if (!rows.length) return;
+      if (!folder && !confirm(`Move ${rows.length} playlist(s) out of their folders?`)) return;
+      Promise.all(rows.map(r => setFolder(r.querySelector(".folder-cell"), folder)))
+        .then(() => { bulkFolderInput.value = ""; refreshFolders(); applyFilter(); });
+    });
 
   </script>
 {% endblock %}

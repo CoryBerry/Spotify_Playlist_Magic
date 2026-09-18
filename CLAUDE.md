@@ -86,7 +86,8 @@ IDEAS.md            ← feature backlog
 ## Models
 
 ```python
-PlaylistTag       # user-applied tags on Spotify playlists (unique per playlist+tag)
+PlaylistTag       # user-applied tags on Spotify playlists (unique per playlist+tag);
+                  # tags under the reserved `folder:` prefix are local folders, one per playlist
 PlaylistCache     # cached Spotify playlist list, 15min/24h TTL tiers (falls back to stale on timeout);
                   # also written by the mix skill's `create` / `refresh-cache` — regenerable by design
 CreatedPlaylist   # history of every Block Mix / Album Blast created (alive/checked_at, gen_seconds, track_count)
@@ -114,10 +115,12 @@ FeedItem          # Feed Radar review queue: one row per (source, harvested line
 | `/spotify/sampler/<id>` | Config page — shows album count, set songs-per-album & #albums |
 | `/spotify/sample` | POST — take the first X songs from each of the first Y albums on the playlist |
 | `/spotify/album-sampler-blocks` | POST — second button on Block Mix: sample N random albums × X random songs from each *selected* playlist (with 7-day cooldown) |
-| `/spotify/manage` | Manage playlists — filter, tag, delete, toggle visibility |
+| `/spotify/manage` | Manage playlists — filter, tag, file into local folders, delete, toggle visibility |
 | `/spotify/tag/add` | POST JSON — add tag to playlist |
 | `/spotify/tag/remove` | POST JSON — remove tag from playlist |
-| `/spotify/tags/all` | GET JSON — all tags (autocomplete) |
+| `/spotify/tags/all` | GET JSON — all tags, folder tags excluded (autocomplete) |
+| `/spotify/folders/all` | GET JSON — all local folder names (autocomplete) |
+| `/spotify/folder/set` | POST JSON — move a playlist into a folder; blank folder unfiles it |
 | `/spotify/toggle-visibility/<id>` | POST — toggle playlist public/private |
 | `/spotify/delete` | POST — bulk unfollow playlists |
 | `/spotify/text-import` | Text Import — paste/upload a text list of albums or tracks |
@@ -158,6 +161,15 @@ FeedItem          # Feed Radar review queue: one row per (source, harvested line
 **7-day cooldown:** tracks used in any build are written to `TrackHistory`. New builds exclude them unless the remaining pool would be smaller than `block_size` (safety fallback keeps the build from failing).
 
 **Ice box (`TrackIce` + `iced_ids(provider)`):** a manual, long-lived exclusion — never-list (`thaw_at` NULL) or timed freeze (`thaw_at` in the future). Unlike cooldown, it's a **hard** exclusion: `iced_ids()` is filtered from the pool *before* the cooldown fallback (so an iced track never returns on a small pool) and applied as a final filter on the deterministic tools (Album Blast, Text Import) too. Timed ice is released by `auto_thaw()` alongside cooldown and folded into the same `ThawTally`. Curated from both the `mix` skill (`mix_helper.py ice add/list/thaw`) and the web Ice Box (`/spotify/ice-box`, `/spotify/ice/{freeze,thaw,search}`), which read/write the same table — a freeze in either surface is honored by the next build with no sync step. The web freeze snowflake (`templates/_ice.html` macro + a delegated handler in `base.html`) also appears on the build done page and Stats tracklists. `_add_months()` in `app.py` mirrors the mix skill's helper so both writers land identical thaw dates.
+
+**Local folders (`FOLDER_PREFIX` on `PlaylistTag`):** Spotify's Web API has **no folder
+endpoints** — folders live only in the client's internal rootlist, which an app token can't
+reach. So Manage's folders are local: tags under a reserved `folder:` prefix, filtered out of
+the normal tag surfaces (`/spotify/tags/all`, the Manage tag column, the mix skill's `sources`
+tags, which reports `folder` separately). `folder_set` deletes any existing `folder:*` row
+before inserting the new one — that one-folder-per-playlist rule is what makes it a *move*
+rather than another tag. A folder exists only while something is in it. Don't try to sync these
+to real Spotify folders without reading the note in `/spotify/folder/set` first.
 
 **Mood presets (`MOOD_PRESETS`):** code is present but disabled. Spotify restricted `/audio-features` for new apps in late 2024. Do not re-enable without verifying API access.
 

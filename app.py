@@ -1100,6 +1100,12 @@ def album_sampler_blocks():
     )
 
 
+# Folders are tags under a reserved prefix, so they share the playlist_tag table
+# but never show up as ordinary tags. tag column is String(50); 7 + 40 fits.
+FOLDER_PREFIX  = "folder:"
+FOLDER_MAX_LEN = 40
+
+
 # ---------------------------------------------------------------
 # Routes — Tagging
 # ---------------------------------------------------------------
@@ -1131,9 +1137,62 @@ def tag_remove():
 
 @app.route("/spotify/tags/all")
 def tags_all():
-    """Return every unique tag for autocomplete."""
-    tags = [r.tag for r in db.session.query(PlaylistTag.tag).filter_by(user_id="local").distinct().order_by(PlaylistTag.tag)]
+    """Return every unique tag for autocomplete (folder tags excluded — see FOLDER_PREFIX)."""
+    tags = [r.tag for r in db.session.query(PlaylistTag.tag)
+            .filter(PlaylistTag.user_id == "local",
+                    ~PlaylistTag.tag.like(FOLDER_PREFIX + "%"))
+            .distinct().order_by(PlaylistTag.tag)]
     return jsonify({"tags": tags})
+
+
+# ---------------------------------------------------------------
+# Routes — Folders (a reserved slice of playlist_tag)
+# ---------------------------------------------------------------
+# Spotify's Web API has no folder endpoints — folders live only in the client's
+# internal rootlist, which an app token can't reach. So these are *local* folders:
+# a reserved `folder:` tag namespace, one folder per playlist, shown on Manage.
+
+def _all_folders():
+    """Every folder name in use, sorted."""
+    rows = (db.session.query(PlaylistTag.tag)
+            .filter(PlaylistTag.user_id == "local",
+                    PlaylistTag.tag.like(FOLDER_PREFIX + "%"))
+            .distinct())
+    return sorted({r.tag[len(FOLDER_PREFIX):] for r in rows})
+
+
+@app.route("/spotify/folders/all")
+def folders_all():
+    """Return every folder name for autocomplete."""
+    return jsonify({"folders": _all_folders()})
+
+
+@app.route("/spotify/folder/set", methods=["POST"])
+def folder_set():
+    """Move a playlist into a folder — or out of every folder when `folder` is blank.
+
+    A playlist lives in at most one folder, so this clears any previous folder tag
+    before writing the new one (that's what makes it a *move* and not another tag).
+    """
+    playlist_id = request.json.get("playlist_id")
+    folder      = request.json.get("folder", "").strip().lower()
+    if not playlist_id:
+        return jsonify({"error": "missing playlist_id"}), 400
+    if len(folder) > FOLDER_MAX_LEN:
+        return jsonify({"error": f"folder name too long (max {FOLDER_MAX_LEN})"}), 400
+
+    # Query.delete() emits the DELETE now, so re-filing into the same folder
+    # can't trip the (user_id, playlist_id, tag) unique constraint on insert.
+    (PlaylistTag.query
+     .filter(PlaylistTag.user_id == "local",
+             PlaylistTag.playlist_id == playlist_id,
+             PlaylistTag.tag.like(FOLDER_PREFIX + "%"))
+     .delete(synchronize_session=False))
+    if folder:
+        db.session.add(PlaylistTag(user_id="local", playlist_id=playlist_id,
+                                   tag=FOLDER_PREFIX + folder))
+    db.session.commit()
+    return jsonify({"folder": folder, "folders": _all_folders()})
 
 
 # ---------------------------------------------------------------
@@ -1233,17 +1292,22 @@ def spotify_manage():
     user_id = sp.me()["id"]
     playlists, cache_updated_at, _ = get_cached_playlists(sp, user_id)
 
-    # Build a dict of {playlist_id: [tags]} for the template
-    all_tags = PlaylistTag.query.filter_by(user_id="local").all()
-    tag_map  = {}
+    # Build {playlist_id: [tags]} and {playlist_id: folder} for the template
+    all_tags   = PlaylistTag.query.filter_by(user_id="local").all()
+    tag_map    = {}
+    folder_map = {}
     for t in all_tags:
-        tag_map.setdefault(t.playlist_id, []).append(t.tag)
+        if t.tag.startswith(FOLDER_PREFIX):
+            folder_map[t.playlist_id] = t.tag[len(FOLDER_PREFIX):]
+        else:
+            tag_map.setdefault(t.playlist_id, []).append(t.tag)
 
     usages    = PlaylistUsage.query.filter_by(provider="spotify").all()
     usage_map = {u.playlist_id: u for u in usages}
 
     return render_template("spotify_manage.html", playlists=playlists, user_id=user_id,
-                           tag_map=tag_map, usage_map=usage_map, cache_updated_at=cache_updated_at,
+                           tag_map=tag_map, folder_map=folder_map, folders=_all_folders(),
+                           usage_map=usage_map, cache_updated_at=cache_updated_at,
                            cache_refresh_url=url_for("cache_refresh") + "?next=" + request.path)
 
 

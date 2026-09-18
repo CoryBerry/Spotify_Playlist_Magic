@@ -773,9 +773,14 @@ def _sequence_arc(tracks, waves=3.0, open_frac=0.07, land_frac=0.14,
 def cmd_sources(args):
     pls = _cached_playlists()
     db = _db()
-    tags = {}
+    # `folder:` tags are the web Manage page's local folders, not real tags — keep
+    # them out of the tag column and surface the folder on its own.
+    tags, folders = {}, {}
     for pid, tag in db.execute("SELECT playlist_id, tag FROM playlist_tag"):
-        tags.setdefault(pid, []).append(tag)
+        if tag.startswith("folder:"):
+            folders[pid] = tag[len("folder:"):]
+        else:
+            tags.setdefault(pid, []).append(tag)
     usage = {pid: (uc, lu) for pid, uc, lu in
              db.execute("SELECT playlist_id, use_count, last_used FROM playlist_usage")}
 
@@ -793,6 +798,7 @@ def cmd_sources(args):
             "name": p["name"],
             "tracks": p.get("tracks", {}).get("total"),
             "tags": ptags,
+            "folder": folders.get(pid, ""),
             "use_count": uc,
         })
     rows.sort(key=lambda r: (-(r["use_count"] or 0), r["name"].lower()))

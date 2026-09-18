@@ -36,6 +36,17 @@ Watch your favorite music blogs and let the app surface new tracks for you. Poin
 
 Tag your playlists with free-form labels like "chill", "office", or "instrumental". Tags appear in Block Mix as filter buttons so you can quickly narrow down to the right vibe without hunting through hundreds of playlists. _(Spotify only)_
 
+### 📁 Folders
+
+Group playlists into folders on the Manage page — move one at a time, or select a batch and move
+them together. Filter the list down to a single folder, or sort by folder to see everything
+clustered. A playlist lives in exactly one folder, and a folder disappears once the last playlist
+leaves it.
+
+> **Note:** these folders are local to this app. Spotify's Web API has no folder support at all —
+> folders exist only inside the official client and can't be read or written by third-party apps —
+> so filing something here won't move it in Spotify itself. _(Spotify only)_
+
 ### 📊 Playlist Stats
 
 See track count, total runtime, unique artist count, and a top-10 artist breakdown for any playlist. Also shows how many times it's been used in a Block Mix build, plus a full tracklist with a 🧊 snowflake on every row so you can freeze a track into the Ice Box without leaving the page.
