@@ -43,8 +43,10 @@ import json
 import math
 import os
 import random
+import re
 import sqlite3
 import sys
+import unicodedata
 from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
@@ -478,6 +480,87 @@ def _annotate_tags(rows, lookup):
     total = len(cache)
     unknown = sum(1 for tags in cache.values() if not tags)
     return total - unknown, total, unknown
+
+
+# ------------------------------------------------------------- personal signal
+# Last.fm scrobbles are `(artist, title)` strings typed by whatever client scrobbled
+# them; Spotify rows are catalog objects. The two agree on the song and disagree on
+# everything else — casing, accents, "(Remastered 2011)", "- 2019 Remix", featured
+# artists. `_norm_track_key` beats both sides into one comparable key so an exact
+# dict lookup does the matching; anything that still misses simply gets no marker.
+
+_MINE_PAREN = re.compile(r"[\(\[][^\)\]]*[\)\]]")           # (Remastered), [Live]
+_MINE_DASH_SUFFIX = re.compile(r"\s-\s.*$")                  # " - 2019 Remaster"
+_MINE_FEAT = re.compile(r"\b(feat|ft|featuring|with)\b.*$")  # "feat. Someone"
+# Two classes of punctuation, normalized differently on purpose: marks that sit *inside*
+# a word vanish ("T.N.T."/"TNT", "Don't"/"Dont"), separators become spaces so a joined
+# and a spaced spelling agree ("AC/DC"/"AC DC", "rock&roll"/"rock & roll").
+_MINE_INTRAWORD = re.compile(r"[.'‘’´`]")
+_MINE_PUNCT = re.compile(r"[^\w\s]")
+
+
+def _norm_track_key(artist, title):
+    """Normalize `(artist, title)` to a comparable key: `"artist\\ttitle"`.
+
+    Lowercases, strips accents, drops parenthetical/bracketed and trailing-dash
+    qualifiers, drops `feat.`-style credits, removes punctuation, collapses
+    whitespace. Deliberately lossy — over-normalizing costs a rare false match,
+    under-normalizing costs most of the real ones.
+    """
+    def clean(s, strip_quals):
+        s = unicodedata.normalize("NFKD", s or "")
+        s = "".join(c for c in s if not unicodedata.combining(c)).lower()
+        if strip_quals:
+            s = _MINE_PAREN.sub(" ", s)
+            s = _MINE_DASH_SUFFIX.sub(" ", s)
+        s = _MINE_FEAT.sub(" ", s)
+        s = _MINE_INTRAWORD.sub("", s)
+        s = _MINE_PUNCT.sub(" ", s)
+        return " ".join(s.split())
+
+    # Only the lead artist — Spotify comma-joins every credited performer, Last.fm
+    # scrobbles usually carry just the primary.
+    lead = (artist or "").split(",")[0]
+    return f"{clean(lead, False)}\t{clean(title, True)}"
+
+
+def _annotate_mine(rows, top_tracks, loved_tracks):
+    """Attach each row's personal Last.fm signal in place. Returns `(matched, total)`.
+
+    `top_tracks` is `[{artist, title, playcount}]` and `loved_tracks` is
+    `[{artist, title}]` — both already fetched in bulk by the caller (tests inject
+    plain lists). Every row gets a `mine` dict so downstream code never has to guard:
+    `{"loved": bool, "playcount": int|None}`, with `playcount` None when the track is
+    known only as loved. A row matching neither list gets `{"loved": False,
+    "playcount": None}` and renders as `·`.
+
+    `matched` counts rows carrying *any* personal signal — the honest denominator for
+    "did the name matching work", since an unmatched row and a genuinely never-played
+    row are indistinguishable from here.
+    """
+    plays = {}
+    for t in top_tracks:
+        plays.setdefault(_norm_track_key(t["artist"], t["title"]), t.get("playcount") or 0)
+    loved = {_norm_track_key(t["artist"], t["title"]) for t in loved_tracks}
+
+    matched = 0
+    for t in rows:
+        key = _norm_track_key(t.get("artist", ""), t.get("name", ""))
+        signal = {"loved": key in loved, "playcount": plays.get(key)}
+        t["mine"] = signal
+        if signal["loved"] or signal["playcount"]:
+            matched += 1
+    return matched, len(rows)
+
+
+def _mine_label(mine):
+    """Render the `mine` signal as the roster's left-hand column: `♥42`, `17`, or `·`."""
+    if not mine:
+        return "·"
+    plays = mine.get("playcount")
+    if mine.get("loved"):
+        return f"♥{plays}" if plays else "♥"
+    return str(plays) if plays else "·"
 
 
 # ---------------------------------------------------------------- arc sequencing
@@ -940,6 +1023,25 @@ def cmd_roster(args):
         print(f"# tags: {resolved}/{total} artists resolved ({unknown} unknown to Last.fm)",
               file=sys.stderr)
 
+    # --mine: annotate with Cory's own scrobble signal (loved + playcount). Runs last,
+    # so it only ever sees rows that already survived ice, cooldown and every filter —
+    # an excluded track can't pick up a marker. Two bulk reads for the whole roster
+    # (not one call per track), then local name matching.
+    if args.mine and rows:
+        import lastfm_service
+        try:
+            lastfm_service.get_api_key()
+            user = lastfm_service.get_user()
+        except lastfm_service.LastfmError as exc:
+            sys.exit(f"--mine needs Last.fm credentials: {exc}")
+
+        top = lastfm_service.user_top_tracks(user, period="overall",
+                                            use_cache=not args.no_cache)
+        loved = lastfm_service.user_loved_tracks(user, use_cache=not args.no_cache)
+        matched, total = _annotate_mine(rows, top, loved)
+        print(f"# mine: {matched}/{total} candidates carry a personal signal "
+              f"({len(top)} scrobbled, {len(loved)} loved for {user})", file=sys.stderr)
+
     total_ms = sum(t.get("duration_ms") or 0 for t in rows)
     # Filter notes go to stderr in both modes (like --tags) — a --json caller wants
     # to know the era filter ate half the pool just as much as a text one does.
@@ -959,7 +1061,10 @@ def cmd_roster(args):
         tagstr = f"  [{', '.join(t['tags'])}]" if t.get("tags") else ""
         year = f" · {t['year']}" if t.get("year") else ""
         exp = "  [E]" if t.get("explicit") else ""
-        print(f"{t['pop']:>3}  {t['ice']:>5}  {_mmss(t.get('duration_ms')):>5}  {t['uri']}  "
+        # --mine rides in the left gutter beside pop/ice so it scans as a column and
+        # stays clear of --tags' trailing bracket.
+        mine = f"  {_mine_label(t.get('mine')):>5}" if args.mine else ""
+        print(f"{t['pop']:>3}  {t['ice']:>5}{mine}  {_mmss(t.get('duration_ms')):>5}  {t['uri']}  "
               f"{t['name']} — {t['artist']}  ({t['album']}{year}){exp}{tagstr}")
     print(f"# {len(rows)} candidates from {len(args.sources)} source(s); "
           f"runtime {_hhmm(total_ms)}; "
@@ -1458,6 +1563,9 @@ def main():
     ro.add_argument("--seed", type=int, default=None, help="seed for --sample (reproducible)")
     ro.add_argument("--no-cache", action="store_true",
                     help="force a live pull, ignoring (and refreshing) the disk cache")
+    ro.add_argument("--mine", action="store_true",
+                    help="annotate with your own Last.fm signal (loved + scrobble count); "
+                         "needs LASTFM_API_KEY + LASTFM_USER")
     ro.add_argument("--tags", action="store_true",
                     help="annotate each row with the lead artist's top-5 Last.fm tags "
                          "(needs LASTFM_API_KEY)")
