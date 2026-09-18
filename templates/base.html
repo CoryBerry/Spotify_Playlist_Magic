@@ -3,25 +3,34 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{% block title %}Spotify Playlist Magic{% endblock %}</title>
+  <title>{% block title %}Crate{% endblock %}</title>
   <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 </head>
 <body class="bg-light">
 
   {% set path = request.path %}
+  {% set tools_paths = ['/spotify/album-blaster', '/spotify/album-blast', '/spotify/sampler',
+                        '/spotify/sample', '/spotify/text-import', '/spotify/feed'] %}
+  {% set in_tools = tools_paths | select('in', path) | list | length > 0 %}
   <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
     <div class="container">
-      <a class="navbar-brand" href="/">Spotify Playlist Magic</a>
+      <a class="navbar-brand" href="/">Crate</a>
       <div class="navbar-nav ms-auto">
         <a class="nav-link {% if path == '/' %}active{% endif %}" href="/">Home</a>
         <a class="nav-link {% if path in ['/spotify', '/spotify/playlists', '/spotify/build'] %}active{% endif %}" href="/spotify">Block Mix</a>
-        <a class="nav-link {% if path.startswith('/spotify/album-blaster') or path == '/spotify/album-blast' %}active{% endif %}" href="/spotify/album-blaster">Album Blaster</a>
-        <a class="nav-link {% if path.startswith('/spotify/sampler') or path == '/spotify/sample' %}active{% endif %}" href="/spotify/sampler">Sampler</a>
-        <a class="nav-link {% if path.startswith('/spotify/text-import') %}active{% endif %}" href="/spotify/text-import">Text Import</a>
-        <a class="nav-link {% if path.startswith('/spotify/feed') %}active{% endif %}" href="/spotify/feed">📡 Feed</a>
         <a class="nav-link {% if path == '/spotify/manage' %}active{% endif %}" href="/spotify/manage">Manage</a>
-        <a class="nav-link {% if path.startswith('/spotify/ice') %}active{% endif %}" href="/spotify/ice-box">🧊 Ice Box</a>
+        <a class="nav-link {% if path.startswith('/spotify/ice') %}active{% endif %}" href="/spotify/ice-box">&#129482; Ice Box</a>
+        <div class="nav-item dropdown">
+          <a class="nav-link dropdown-toggle {% if in_tools %}active{% endif %}" href="#" role="button"
+             data-bs-toggle="dropdown" aria-expanded="false">+ Tools</a>
+          <ul class="dropdown-menu dropdown-menu-end">
+            <li><a class="dropdown-item {% if path.startswith('/spotify/album-blaster') or path == '/spotify/album-blast' %}active{% endif %}" href="/spotify/album-blaster">Album Blaster</a></li>
+            <li><a class="dropdown-item {% if path.startswith('/spotify/sampler') or path == '/spotify/sample' %}active{% endif %}" href="/spotify/sampler">Sampler</a></li>
+            <li><a class="dropdown-item {% if path.startswith('/spotify/text-import') %}active{% endif %}" href="/spotify/text-import">Text Import</a></li>
+            <li><a class="dropdown-item {% if path.startswith('/spotify/feed') %}active{% endif %}" href="/spotify/feed">&#128225; Feed</a></li>
+          </ul>
+        </div>
         {% if plex_enabled %}
           <span class="nav-link text-secondary" style="cursor:default; padding-left:4px; padding-right:4px;">|</span>
           <a class="nav-link text-info {% if path in ['/plex', '/plex/playlists', '/plex/build'] %}active{% endif %}" href="/plex/playlists">Plex Mix</a>
@@ -30,9 +39,6 @@
         <span class="nav-link text-secondary" style="cursor:default; padding-left:4px; padding-right:4px;">|</span>
         <a class="nav-link {% if path.startswith('/recently-created') %}active{% endif %}" href="/recently-created">Recent</a>
         <a class="nav-link {% if path == '/settings' %}active{% endif %}" href="/settings">Settings</a>
-        {% if session.spotify_token %}
-          <a class="nav-link text-warning" href="/logout">Disconnect Spotify</a>
-        {% endif %}
       </div>
     </div>
   </nav>
@@ -49,23 +55,27 @@
     {% block content %}{% endblock %}
   </div>
 
-  {% if cache_updated_at %}
   <footer class="border-top mt-5 py-3 text-center text-muted small">
-    Playlist data cached &middot; Updated <span id="cacheAge"></span>
-    &middot; <a href="{{ cache_refresh_url }}" class="text-muted">Refresh now</a>
-    <script>
-      (function() {
-        const updated = new Date("{{ cache_updated_at.strftime('%Y-%m-%dT%H:%M:%S') }}");
-        const diff    = Math.floor((Date.now() - updated.getTime()) / 1000);
-        let label;
-        if      (diff < 60)   label = diff + "s ago";
-        else if (diff < 3600) label = Math.floor(diff / 60) + "m ago";
-        else                  label = Math.floor(diff / 3600) + "h ago";
-        document.getElementById("cacheAge").textContent = label;
-      })();
-    </script>
+    {% if cache_updated_at %}
+      Playlist data cached &middot; Updated <span id="cacheAge"></span>
+      &middot; <a href="{{ cache_refresh_url }}" class="text-muted">Refresh now</a>
+      <script>
+        (function() {
+          const updated = new Date("{{ cache_updated_at.strftime('%Y-%m-%dT%H:%M:%S') }}");
+          const diff    = Math.floor((Date.now() - updated.getTime()) / 1000);
+          let label;
+          if      (diff < 60)   label = diff + "s ago";
+          else if (diff < 3600) label = Math.floor(diff / 60) + "m ago";
+          else                  label = Math.floor(diff / 3600) + "h ago";
+          document.getElementById("cacheAge").textContent = label;
+        })();
+      </script>
+    {% endif %}
+    {% if session.spotify_token %}
+      {% if cache_updated_at %}<br>{% endif %}
+      <a href="/logout" class="text-muted">Disconnect Spotify</a>
+    {% endif %}
   </footer>
-  {% endif %}
 
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 
