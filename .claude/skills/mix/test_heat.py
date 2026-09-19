@@ -249,3 +249,189 @@ def test_fits_requires_overlap():
 def test_fits_is_case_insensitive():
     entry = {"fits": ["Dance"]}
     assert mh._heat_fits(entry, ["dANCE"]) is True
+
+
+# --------------------------------------------------------- _lastfm_tag_lookup
+
+def test_lastfm_tag_lookup_passes_limit_and_caches_per_artist(monkeypatch):
+    """The #20 prefactor: --tags (limit 5) and --heat (limit 10) share this one
+    lookup, parameterized rather than each inlining its own Last.fm call."""
+    import lastfm_service
+    calls = []
+
+    def fake_top_tags(artist, limit=10, **kwargs):
+        calls.append((artist, limit))
+        return [{"name": "dance punk"}]
+
+    monkeypatch.setattr(lastfm_service, "artist_top_tags", fake_top_tags)
+
+    lookup10 = mh._lastfm_tag_lookup(10)
+    assert lookup10("Bonobo") == ["dance punk"]
+    assert lookup10("bonobo") == ["dance punk"]  # cached, case-insensitive key
+    assert calls == [("Bonobo", 10)]
+
+    lookup5 = mh._lastfm_tag_lookup(5)
+    lookup5("Bonobo")
+    assert calls == [("Bonobo", 10), ("Bonobo", 5)]  # separate lookup, separate cache
+
+
+# ------------------------------------------------------------ _heat_norm_genre
+
+def test_norm_genre_folds_dash_and_space():
+    assert mh._heat_norm_genre("Dance-Punk") == mh._heat_norm_genre("dance punk") == "dance punk"
+
+
+def test_norm_genre_collapses_repeats_and_trims():
+    assert mh._heat_norm_genre("  neuro--funk  ") == "neuro funk"
+
+
+# ------------------------------------------------------------------ _heat_active
+
+def test_active_keeps_only_tier_positive_and_attaches_tier_phase():
+    today = date(2026, 1, 1)
+    entries = [
+        {"type": "vibing", "name": "Dance-punk", "started": date(2026, 1, 1), "fade": 30},
+        {"type": "vibing", "name": "Old News", "started": date(2025, 1, 1), "fade": 30},  # expired
+    ]
+    active = mh._heat_active(entries, today)
+    assert [e["name"] for e in active] == ["Dance-punk"]
+    assert active[0]["tier"] == 1 and active[0]["phase"] == "fade"
+
+
+def test_active_does_not_mutate_input_entries():
+    today = date(2026, 1, 1)
+    entry = {"type": "vibing", "name": "Dance-punk", "started": today, "fade": 30}
+    mh._heat_active([entry], today)
+    assert "tier" not in entry
+
+
+# ------------------------------------------------------------------- _heat_gate
+
+def test_gate_no_terms_keeps_everything_in_scope():
+    active = [{"name": "A", "fits": ["dance"]}, {"name": "B", "fits": []}]
+    in_scope, skipped = mh._heat_gate(active, None)
+    assert in_scope == active
+    assert skipped == []
+
+
+def test_gate_splits_by_fits():
+    active = [
+        {"name": "Dance-punk", "fits": ["dance", "party", "hype"]},
+        {"name": "Wednesday", "fits": []},
+    ]
+    in_scope, skipped = mh._heat_gate(active, ["yoga", "folk"])
+    assert [e["name"] for e in in_scope] == ["Wednesday"]  # blank Fits -> always in scope
+    assert [e["name"] for e in skipped] == ["Dance-punk"]
+
+
+# ----------------------------------------------------------------- _annotate_heat
+
+def _row(artist, uri=None):
+    return {"uri": uri or f"spotify:track:{artist}", "name": "Song", "artist": artist}
+
+
+def test_artist_kind_matches_substring_case_insensitive():
+    rows = [_row("The Wednesday Band"), _row("Someone Else")]
+    entries = [{"name": "wednesday", "kind": "artist", "tier": 1, "phase": "fade"}]
+    found = mh._annotate_heat(rows, entries)
+    assert found == [1]
+    assert rows[0]["heat"] == {"what": "wednesday", "kind": "artist", "tier": 1, "phase": "fade"}
+    assert rows[1]["heat"] is None
+
+
+def test_concert_entry_has_no_kind_and_still_matches_as_artist():
+    rows = [_row("Modest Mouse")]
+    entries = [{"type": "concert", "name": "Modest Mouse", "tier": 3, "phase": "ramp"}]
+    found = mh._annotate_heat(rows, entries)
+    assert found == [1]
+    assert rows[0]["heat"]["kind"] == "artist"
+
+
+def test_artist_only_heat_never_calls_tag_lookup():
+    rows = [_row("Modest Mouse")]
+    entries = [{"name": "Modest Mouse", "kind": "artist", "tier": 1, "phase": "fade"}]
+
+    def boom(_artist):
+        raise AssertionError("tag_lookup must not be called for artist-kind entries")
+
+    found = mh._annotate_heat(rows, entries, tag_lookup=boom)
+    assert found == [1]
+
+
+def test_genre_kind_matches_normalized_lastfm_tags():
+    rows = [_row("!!!"), _row("Some Pop Artist")]
+
+    def lookup(artist):
+        return {"!!!": ["dance punk", "electronic"]}.get(artist, ["pop"])
+
+    entries = [{"name": "Dance-punk", "kind": "genre", "tier": 2, "phase": "fade"}]
+    found = mh._annotate_heat(rows, entries, tag_lookup=lookup)
+    assert found == [1]
+    assert rows[0]["heat"] == {"what": "Dance-punk", "kind": "genre", "tier": 2, "phase": "fade"}
+    assert rows[1]["heat"] is None
+
+
+def test_genre_lookup_uses_lead_artist_only():
+    rows = [_row("Some Band, Featured Guest")]
+    seen = []
+
+    def lookup(artist):
+        seen.append(artist)
+        return ["dance punk"]
+
+    entries = [{"name": "dance-punk", "kind": "genre", "tier": 1, "phase": "fade"}]
+    mh._annotate_heat(rows, entries, tag_lookup=lookup)
+    assert seen == ["Some Band"]
+
+
+def test_multiple_matches_hottest_tier_wins():
+    rows = [_row("Wednesday")]
+    entries = [
+        {"name": "Wednesday", "kind": "artist", "tier": 1, "phase": "fade"},
+        {"name": "wed", "kind": "artist", "tier": 3, "phase": "ramp"},
+    ]
+    found = mh._annotate_heat(rows, entries)
+    assert found == [1, 1]
+    assert rows[0]["heat"]["tier"] == 3  # hotter entry wins even though seen second
+
+
+def test_no_entries_leaves_every_row_unheated():
+    rows = [_row("Anyone")]
+    found = mh._annotate_heat(rows, [])
+    assert found == []
+    assert rows[0]["heat"] is None
+
+
+# --------------------------------------------------------- the yoga test (#20)
+
+def test_yoga_brief_scores_zero_heat_even_when_dance_punk_is_hot():
+    """The failure this ticket exists to prevent: a yoga playlist must not come
+    back with Peaches heat just because dance-punk happens to be hot right now.
+    Two independent gates protect it — scope (Fits doesn't match the brief) and
+    supply (the yoga pool holds no dance-punk tracks to begin with) — and this
+    exercises both at once, the way `roster --tag yoga --heat --heat-fits
+    yoga,folk` would.
+    """
+    today = date(2026, 9, 18)
+    entries = [
+        {"type": "vibing", "name": "Dance-punk", "kind": "genre",
+         "started": date(2026, 9, 18), "fade": 60, "fits": ["dance", "party", "hype"]},
+        {"type": "vibing", "name": "Wednesday", "kind": "artist",
+         "started": date(2026, 9, 14), "fade": 30, "fits": []},
+    ]
+    active = mh._heat_active(entries, today)
+    in_scope, skipped = mh._heat_gate(active, ["yoga", "folk"])
+
+    assert [e["name"] for e in skipped] == ["Dance-punk"]  # scope gate: Fits mismatch
+    assert [e["name"] for e in in_scope] == ["Wednesday"]  # blank Fits stays in scope
+
+    # A yoga roster's real tracks — none of them Wednesday, and no genre lookup
+    # even runs (Wednesday is artist-kind), so supply gates the rest to zero.
+    rows = [_row("Enya"), _row("Bonobo"), _row("Nils Frahm")]
+
+    def boom(_artist):
+        raise AssertionError("no genre-kind entry survived the scope gate")
+
+    found = mh._annotate_heat(rows, in_scope, tag_lookup=boom)
+    assert found == [0]  # supply gate: found 0 — the yoga pool has no Wednesday
+    assert all(r["heat"] is None for r in rows)  # zero heated rows, full stop

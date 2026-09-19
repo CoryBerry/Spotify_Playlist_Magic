@@ -28,7 +28,8 @@ regenerable `playlist_cache` blob so the skill can see its own playlists.
 The `roster` verb can optionally annotate each candidate with its lead artist's
 Last.fm tags (`--tags`, opt-in — needs LASTFM_API_KEY; plain roster stays offline
 and Last.fm-free). Tags give mood/genre context for curation now that Spotify's
-/audio-features is unavailable.
+/audio-features is unavailable. It can also annotate with `profile/heat.md`'s
+current heat (`--heat`, `--heat-fits <terms>`) — see the heat section below.
 
 Examples:
     python mix_helper.py sources --search chill
@@ -502,6 +503,26 @@ def _filter_reason(t, args):
     if args.pop_max is not None and pop > args.pop_max:
         return "pop"
     return None
+
+
+def _lastfm_tag_lookup(limit):
+    """Build a cached `artist -> [tag names]` Last.fm lookup at a given `limit`.
+
+    Shared by `--tags` (limit 5 — enough for a mood/genre hint) and `--heat`
+    genre matching (limit 10 — a genre like `dance-punk` often isn't in an
+    artist's top 5 tags). One lookup, one cache per call site, parameterized
+    instead of duplicated.
+    """
+    import lastfm_service
+    cache = {}
+
+    def lookup(artist):
+        key = artist.lower()
+        if key not in cache:
+            cache[key] = [d["name"] for d in lastfm_service.artist_top_tags(artist, limit=limit)]
+        return cache[key]
+
+    return lookup
 
 
 def _annotate_tags(rows, lookup):
@@ -1082,10 +1103,7 @@ def cmd_roster(args):
         except lastfm_service.LastfmError as exc:
             sys.exit(f"--tags needs a Last.fm key: {exc}")
 
-        def _lookup(artist):
-            return [d["name"] for d in lastfm_service.artist_top_tags(artist, limit=5)]
-
-        resolved, total, unknown = _annotate_tags(rows, _lookup)
+        resolved, total, unknown = _annotate_tags(rows, _lastfm_tag_lookup(5))
         print(f"# tags: {resolved}/{total} artists resolved ({unknown} unknown to Last.fm)",
               file=sys.stderr)
 
@@ -1108,6 +1126,56 @@ def cmd_roster(args):
         print(f"# mine: {matched}/{total} candidates carry a personal signal "
               f"({len(top)} scrobbled, {len(loved)} loved for {user})", file=sys.stderr)
 
+    # --heat: annotate with profile/heat.md's current heat. Supply is the gate —
+    # heat only ever matches against these already-selected sources, never widens
+    # the search — so a yoga brief with no dance-punk in its pools scores zero
+    # heat no matter how hot dance-punk is. --heat-fits is the second gate: a row
+    # whose own Fits column doesn't overlap the brief's terms is skipped before
+    # it ever gets a chance to match a track. Annotation only — same as --tags/
+    # --mine, this never filters or reorders rows.
+    if args.heat:
+        for t in rows:
+            t["heat"] = None
+        if not os.path.exists(HEAT_PATH):
+            print("# heat: no profile/heat.md, skipping", file=sys.stderr)
+        else:
+            entries, settings = _parse_heat(HEAT_PATH)
+            today = datetime.now().date()
+            active = _heat_active(entries, today)
+            brief_terms = ([t.strip() for t in args.heat_fits.split(",") if t.strip()]
+                           if args.heat_fits else None)
+            in_scope, skipped = _heat_gate(active, brief_terms)
+
+            for e in skipped:
+                print(f"# heat: {e['name']} — skipped, Fits({', '.join(e['fits'])}) "
+                      f"doesn't match brief({', '.join(brief_terms)})", file=sys.stderr)
+
+            # Genre matching needs Last.fm; artist-only heat must never touch it.
+            # Hard-fail (naming the offending rows) rather than silently going
+            # tagless — same policy as --tags, for the same reason.
+            genre_rows = [e for e in in_scope if (e.get("kind") or "artist") == "genre"]
+            tag_lookup = None
+            if genre_rows:
+                import lastfm_service
+                try:
+                    lastfm_service.get_api_key()
+                except lastfm_service.LastfmError as exc:
+                    offenders = ", ".join(e["name"] for e in genre_rows)
+                    sys.exit(f"--heat needs a Last.fm key for genre row(s) {offenders}: {exc}")
+                tag_lookup = _lastfm_tag_lookup(10)
+
+            found = _annotate_heat(rows, in_scope, tag_lookup)
+            if in_scope:
+                slots = _heat_slots(in_scope, len(rows), settings)
+                parts = []
+                for e, n, f in zip(in_scope, slots, found):
+                    extra = ""
+                    if e["type"] == "concert" and e["phase"] == "ramp":
+                        extra = f" (show in {(e['date'] - today).days}d)"
+                    parts.append(f"{e['name']} {HEAT_GLYPH}{e['tier']} {e['phase']}{extra} "
+                                 f"up to {n}, found {f}")
+                print("# heat: " + " · ".join(parts), file=sys.stderr)
+
     total_ms = sum(t.get("duration_ms") or 0 for t in rows)
     # Filter notes go to stderr in both modes (like --tags) — a --json caller wants
     # to know the era filter ate half the pool just as much as a text one does.
@@ -1127,10 +1195,12 @@ def cmd_roster(args):
         tagstr = f"  [{', '.join(t['tags'])}]" if t.get("tags") else ""
         year = f" · {t['year']}" if t.get("year") else ""
         exp = "  [E]" if t.get("explicit") else ""
-        # --mine rides in the left gutter beside pop/ice so it scans as a column and
-        # stays clear of --tags' trailing bracket.
+        # --mine and --heat ride in the left gutter beside pop/ice so they scan as
+        # columns and stay clear of --tags' trailing bracket.
         mine = f"  {_mine_label(t.get('mine')):>5}" if args.mine else ""
-        print(f"{t['pop']:>3}  {t['ice']:>5}{mine}  {_mmss(t.get('duration_ms')):>5}  {t['uri']}  "
+        heat_glyph = (HEAT_GLYPH + str(t["heat"]["tier"])) if t.get("heat") else "·"
+        heat = f"  {heat_glyph:>3}" if args.heat else ""
+        print(f"{t['pop']:>3}  {t['ice']:>5}{mine}{heat}  {_mmss(t.get('duration_ms')):>5}  {t['uri']}  "
               f"{t['name']} — {t['artist']}  ({t['album']}{year}){exp}{tagstr}")
     mode = "top" if args.top else ("band+jitter" if args.jitter else "band")
     print(f"# {len(rows)} candidates from {len(args.sources)} source(s); "
@@ -1597,10 +1667,13 @@ def cmd_ice(args):
 #              afterward, reusing the same fade curve.
 # `today` is always an injected parameter, never read inside the curve math, so
 # every edge (the tier boundaries especially) tests offline — see test_heat.py.
-# Nothing consumes this yet (no build reads it) — this is just the doc format,
-# the curve, and `heat list` to prove it out from the command line.
+# `roster --heat` (below) is the one consumer so far: it annotates the candidate
+# pool `roster` already built, gated by supply (heat can't add a source) and,
+# opt-in via `--heat-fits`, by each entry's own `Fits` scope. No *build* verb
+# reads it yet — annotation only.
 
 HEAT_PATH = os.path.join(REPO_ROOT, "profile", "heat.md")
+HEAT_GLYPH = "\U0001f525"  # named so it can sit inside an f-string {expr} (Python <3.12 rejects a literal escape there)
 DEFAULT_HEAT_FADE_DAYS = 30
 DEFAULT_HEAT_TIERS = (30, 15, 5)   # % share of a mix a tier-1/2/3 entry may claim
 DEFAULT_HEAT_CAP = 50              # % of a mix heat may claim in total, before scaling
@@ -1799,6 +1872,82 @@ def _heat_fits(entry, brief_terms):
     return any(f.strip().lower() in terms for f in fits)
 
 
+def _heat_norm_genre(s):
+    """Fold a genre string for matching: lowercase, `-`/whitespace collapse to one
+    space. Makes `dance-punk` (a heat row's `What`) equal `dance punk` (a Last.fm tag)."""
+    return re.sub(r"[-\s]+", " ", s.strip().lower()).strip()
+
+
+def _heat_active(entries, today):
+    """Tier/phase every entry as of `today` and keep only the active ones (tier >= 1).
+
+    Returns new dicts (`entries` isn't mutated) carrying `tier`/`phase` alongside
+    the original fields — the shape `_heat_slots`, `_heat_fits` and `_annotate_heat`
+    all expect.
+    """
+    active = []
+    for e in entries:
+        tier, phase = _heat_tier(e, today)
+        if tier:
+            active.append(dict(e, tier=tier, phase=phase))
+    return active
+
+
+def _heat_gate(active, brief_terms):
+    """Split tier-active entries into `(in_scope, skipped)` against `--heat-fits`.
+
+    `brief_terms=None` (flag omitted) means every active entry stays in scope —
+    supply is still the gate. Given terms, `_heat_fits` decides per entry; a row
+    with a blank `Fits` column always passes (fits everywhere).
+    """
+    if brief_terms is None:
+        return list(active), []
+    in_scope, skipped = [], []
+    for e in active:
+        (in_scope if _heat_fits(e, brief_terms) else skipped).append(e)
+    return in_scope, skipped
+
+
+def _annotate_heat(rows, entries, tag_lookup=None):
+    """Annotate `rows` in place with `"heat"` = `{what, kind, tier, phase}` or `None`.
+
+    `entries` must already be tier-active (`_heat_active`) and scope-gated
+    (`_heat_gate`) — this is purely the supply-side match, and it never filters or
+    reorders `rows`. Artist-kind entries (including every Concert row, which has
+    no `Kind` column of its own) match case-insensitive substring against the
+    track's `artist` field, same convention as `find-artists`. Genre-kind entries
+    match the lead artist's Last.fm tags via `tag_lookup(artist) -> [tag names]`,
+    normalized on both sides with `_heat_norm_genre` — `tag_lookup` is only ever
+    called for a genre entry, so an all-artist heat doc stays fully offline.
+
+    When more than one entry matches the same track, the hottest (highest tier)
+    wins; ties keep whichever entry was seen first. Returns a list of match
+    counts parallel to `entries` — the `found` half of the `up to N, found M`
+    stderr footer.
+    """
+    found = [0] * len(entries)
+    for row in rows:
+        artist_field = row.get("artist") or ""
+        lead = artist_field.split(",")[0].strip()
+        best = None
+        for idx, e in enumerate(entries):
+            kind = e.get("kind") or "artist"
+            if kind == "genre":
+                tags = {_heat_norm_genre(t) for t in (tag_lookup(lead) if tag_lookup else [])}
+                hit = _heat_norm_genre(e["name"]) in tags
+            else:
+                hit = e["name"].lower() in artist_field.lower()
+            if not hit:
+                continue
+            found[idx] += 1
+            if best is None or e["tier"] > best["tier"]:
+                best = e
+        row["heat"] = ({"what": best["name"], "kind": best.get("kind") or "artist",
+                         "tier": best["tier"], "phase": best["phase"]}
+                        if best is not None else None)
+    return found
+
+
 def cmd_heat(args):
     """`heat list` — read profile/heat.md and print each entry's current phase.
 
@@ -1913,6 +2062,13 @@ def main():
     ro.add_argument("--tags", action="store_true",
                     help="annotate each row with the lead artist's top-5 Last.fm tags "
                          "(needs LASTFM_API_KEY)")
+    ro.add_argument("--heat", action="store_true",
+                    help="annotate each row with profile/heat.md's current heat "
+                         "(vibing artist/genre fades, concert ramp/afterglow); "
+                         "supply-gated by these sources, never filters or reorders")
+    ro.add_argument("--heat-fits", default=None, metavar="TERMS",
+                    help="comma-separated brief vibe words (e.g. 'chill,yoga'); a heat "
+                         "row whose own Fits column doesn't overlap is skipped, with why")
     ro.add_argument("--json", action="store_true")
     ro.set_defaults(func=cmd_roster)
 

@@ -16,9 +16,9 @@ hot week can't eat the whole playlist.>
 
 <A plain fade: an artist or genre you're into right now. Starts hot, steps down over
 `Fade` (default 30d if left blank), then expires and drops off the list on its own —
-delete nothing, just let it age out. `Fits` scopes the row to briefs whose terms
-overlap its comma-separated list (blank = fits anywhere); it isn't consumed until a
-later ticket, but fill it in now if you know it.>
+delete nothing, just let it age out. `Fits` scopes the row to a `roster --heat
+--heat-fits <terms>` brief whose comma-separated vibe words overlap its own list (blank
+= fits anywhere) — the guard against, say, dance-punk heat showing up in a yoga mix.>
 
 | What | Kind | Started | Fade | Fits | Note |
 |---|---|---|---|---|---|
