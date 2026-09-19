@@ -189,6 +189,14 @@ Knobs:
   row's ceiling against what was actually found, e.g. `Dance-punk 🔥2 fade up to 6, found 23` —
   `found` is the honest number, not a shortfall to go fix.
 
+  **`heat add`** appends a row instead of opening the file by hand: `heat add "Wednesday"`
+  drops a Vibing row with `Started` set to today; `heat add "Mannequin Pussy" --concert
+  2026-11-14 --note "same show"` routes to Concerts instead. `--kind` (artist/genre, Vibing
+  only), `--fade` (e.g. `60d`) and `--fits` fill their columns; anything omitted is blank. It's
+  **append-only** — every existing row round-trips byte-for-byte, so it's safe to run against
+  a doc Cory is mid-edit on. A missing `profile/heat.md` is created from `profile.sample/heat.md`
+  first. There's no `remove` — deleting a line by hand is faster than any flag would be.
+
 Each row carries its **runtime** (`m:ss`), **release year** (after the album name) and an
 `[E]` marker when explicit; the stderr footer totals the roster's runtime (`runtime 2h57m`).
 `--json` carries the same as `duration_ms` / `year` / `explicit`. **Size a mix off these —

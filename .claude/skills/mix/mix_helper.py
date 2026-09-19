@@ -46,6 +46,7 @@ import math
 import os
 import random
 import re
+import shutil
 import sqlite3
 import sys
 import unicodedata
@@ -1671,8 +1672,13 @@ def cmd_ice(args):
 # pool `roster` already built, gated by supply (heat can't add a source) and,
 # opt-in via `--heat-fits`, by each entry's own `Fits` scope. No *build* verb
 # reads it yet — annotation only.
+#
+# `heat add` is the one writer: an append-only path (`_heat_insert_row`) so the
+# hand-authored doc can gain a row from the CLI without risking a rewrite of
+# lines Cory is mid-edit on — it never touches a line it isn't inserting.
 
 HEAT_PATH = os.path.join(REPO_ROOT, "profile", "heat.md")
+HEAT_SAMPLE_PATH = os.path.join(REPO_ROOT, "profile.sample", "heat.md")
 HEAT_GLYPH = "\U0001f525"  # named so it can sit inside an f-string {expr} (Python <3.12 rejects a literal escape there)
 DEFAULT_HEAT_FADE_DAYS = 30
 DEFAULT_HEAT_TIERS = (30, 15, 5)   # % share of a mix a tier-1/2/3 entry may claim
@@ -1948,12 +1954,136 @@ def _annotate_heat(rows, entries, tag_lookup=None):
     return found
 
 
-def cmd_heat(args):
-    """`heat list` — read profile/heat.md and print each entry's current phase.
+def _heat_insert_row(text, table_title, row_cells):
+    """Insert one row into the `## {table_title}` table of a heat.md `text`.
 
-    A missing profile/heat.md is not an error (unconfigured clone) — it just
-    says so and exits 0, same as every other skill's no-op-gracefully rule.
+    Every other line of `text` passes through byte-for-byte — this never
+    rewrites, reformats, or reorders an existing row, so a doc Cory is
+    mid-edit on can't be clobbered by a CLI call. `row_cells` is a
+    lowercased-header -> value dict; the row is built in the table's own
+    column order, so it matches whatever columns that table actually has
+    rather than a hardcoded layout.
+
+    Raises `ValueError` (before anything is written) if the section or its
+    table can't be found — a heat.md that doesn't match the expected shape
+    must fail loudly rather than guess where to splice.
+
+    Operates on `text.splitlines(keepends=True)` and reuses each line's own
+    ending for the inserted row, so a file's existing newline convention
+    (```\\n``` vs ```\\r\\n```) round-trips untouched too.
     """
+    lines = text.splitlines(keepends=True)
+    title_lower = table_title.strip().lower()
+
+    heading_idx = None
+    for i, raw in enumerate(lines):
+        stripped = raw.strip()
+        if stripped.startswith("#") and stripped.lstrip("#").strip().lower() == title_lower:
+            heading_idx = i
+            break
+    if heading_idx is None:
+        raise ValueError(f"no '## {table_title}' section in heat.md")
+
+    header_idx = None
+    for i in range(heading_idx + 1, len(lines)):
+        stripped = lines[i].strip()
+        if stripped.startswith("#"):
+            break
+        if stripped.startswith("|"):
+            header_idx = i
+            break
+    if header_idx is None:
+        raise ValueError(f"'## {table_title}' section has no table")
+
+    header_cells = [c.lower() for c in _heat_split_row(lines[header_idx])]
+
+    sep_idx = header_idx + 1
+    sep_cells = _heat_split_row(lines[sep_idx]) if sep_idx < len(lines) else []
+    if not sep_cells or not all(_HEAT_SEP_RE.match(c) for c in sep_cells):
+        raise ValueError(f"'## {table_title}' table is missing its header separator")
+
+    insert_idx = sep_idx + 1
+    while insert_idx < len(lines) and lines[insert_idx].strip().startswith("|"):
+        insert_idx += 1
+
+    anchor = lines[sep_idx]
+    ending = anchor[len(anchor.rstrip("\r\n")):] or "\n"
+    ordered = [row_cells.get(h, "") for h in header_cells]
+    lines.insert(insert_idx, "| " + " | ".join(ordered) + " |" + ending)
+    return "".join(lines)
+
+
+def _cmd_heat_add(args):
+    """`heat add` — validate, then append exactly one row to profile/heat.md.
+
+    `--concert` routes to the Concerts table; everything else goes to Vibing
+    with `Started` defaulting to today. Every check (name present, `--kind`
+    vs `--concert`, `--fade` shape, `--concert`'s own date) runs before the
+    file is touched at all — including before a missing heat.md gets created
+    from the sample, so a bad flag never leaves a half-done file behind.
+    """
+    if not args.name:
+        sys.exit("heat add needs a name (What for Vibing, Who for --concert).")
+    if args.concert and args.kind:
+        sys.exit("--kind only applies to Vibing rows; drop it or drop --concert.")
+    if args.fade is not None and not _HEAT_FADE_RE.match(args.fade.strip()):
+        sys.exit(f"--fade wants e.g. '60d', got {args.fade!r}.")
+
+    if args.concert:
+        try:
+            concert_date = datetime.strptime(args.concert, "%Y-%m-%d").date()
+        except ValueError:
+            sys.exit(f"--concert wants YYYY-MM-DD, got {args.concert!r}.")
+        table_title = "Concerts"
+        row = {
+            "who": args.name,
+            "date": concert_date.isoformat(),
+            "fade": args.fade or "",
+            "fits": args.fits or "",
+            "note": args.note or "",
+        }
+        when = f"on {row['date']}"
+    else:
+        table_title = "Vibing"
+        row = {
+            "what": args.name,
+            "kind": args.kind or "artist",
+            "started": datetime.now().date().isoformat(),
+            "fade": args.fade or "",
+            "fits": args.fits or "",
+            "note": args.note or "",
+        }
+        when = f"since {row['started']}"
+
+    if not os.path.exists(HEAT_PATH):
+        os.makedirs(os.path.dirname(HEAT_PATH), exist_ok=True)
+        shutil.copyfile(HEAT_SAMPLE_PATH, HEAT_PATH)
+        print("# heat: no profile/heat.md, created it from the sample", file=sys.stderr)
+
+    with open(HEAT_PATH, encoding="utf-8", newline="") as fh:
+        text = fh.read()
+    try:
+        text = _heat_insert_row(text, table_title, row)
+    except ValueError as exc:
+        sys.exit(f"heat add: {exc}")
+    with open(HEAT_PATH, "w", encoding="utf-8", newline="") as fh:
+        fh.write(text)
+
+    print(f"added {table_title} row: {args.name} ({when})")
+
+
+def cmd_heat(args):
+    """`heat list` / `heat add` — read or append to profile/heat.md.
+
+    `list` prints each entry's current phase. A missing profile/heat.md is
+    not an error (unconfigured clone) — it just says so and exits 0, same as
+    every other skill's no-op-gracefully rule. `add` appends one row (see
+    `_cmd_heat_add`) and creates the file from the sample first if needed.
+    """
+    if args.action == "add":
+        _cmd_heat_add(args)
+        return
+
     if not os.path.exists(HEAT_PATH):
         print("nothing hot")
         return
@@ -2146,11 +2276,21 @@ def main():
     i.add_argument("--reason", default=None, help="add: why (e.g. 'heard to death')")
     i.set_defaults(func=cmd_ice)
 
-    h = sub.add_parser("heat", help="read profile/heat.md's fade/concert curve (mirror of ice)")
-    h.add_argument("action", choices=["list"])
+    h = sub.add_parser("heat", help="read profile/heat.md's fade/concert curve (mirror of ice), or append a row")
+    h.add_argument("action", choices=["list", "add"])
+    h.add_argument("name", nargs="?", help="add: the What (Vibing) / Who (Concerts) value")
+    h.add_argument("--concert", metavar="YYYY-MM-DD", default=None,
+                   help="add: route to Concerts instead of Vibing, with this show date")
+    h.add_argument("--kind", choices=["artist", "genre"], default=None,
+                   help="add: Vibing row kind (default artist); invalid together with --concert")
+    h.add_argument("--fade", default=None, metavar="Nd",
+                   help="add: fade window, e.g. '60d' (blank/omitted default 30d)")
+    h.add_argument("--fits", default=None, metavar="TERMS",
+                   help="add: comma-separated brief vibe words this row fits (blank fits anywhere)")
+    h.add_argument("--note", default=None, help="add: free-text note")
     h.add_argument("--for", dest="for_n", type=int, default=0, metavar="N",
-                   help="also compute each active entry's slot ceiling for an N-track mix")
-    h.add_argument("--json", action="store_true")
+                   help="list: also compute each active entry's slot ceiling for an N-track mix")
+    h.add_argument("--json", action="store_true", help="list: JSON output")
     h.set_defaults(func=cmd_heat)
 
     args = ap.parse_args()
