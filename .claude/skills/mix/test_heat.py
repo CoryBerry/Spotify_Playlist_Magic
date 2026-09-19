@@ -7,7 +7,11 @@ against fixed dates rather than mocking the clock.
     PYTHONUTF8=1 python -m pytest .claude/skills/mix/test_heat.py
 """
 import importlib
+import os
 from datetime import date, timedelta
+from types import SimpleNamespace
+
+import pytest
 
 mh = importlib.import_module("mix_helper")
 
@@ -435,3 +439,199 @@ def test_yoga_brief_scores_zero_heat_even_when_dance_punk_is_hot():
     found = mh._annotate_heat(rows, in_scope, tag_lookup=boom)
     assert found == [0]  # supply gate: found 0 — the yoga pool has no Wednesday
     assert all(r["heat"] is None for r in rows)  # zero heated rows, full stop
+
+
+# --------------------------------------------------------- _heat_insert_row (#21)
+
+def test_insert_appends_after_last_vibing_row_leaving_others_untouched():
+    before = HEAT_DOC
+    after = mh._heat_insert_row(before, "Vibing", {
+        "what": "Phoebe Bridgers", "kind": "artist", "started": "2026-09-19",
+        "fade": "", "fits": "", "note": "",
+    })
+    before_lines = before.splitlines()
+    after_lines = after.splitlines()
+    assert len(after_lines) == len(before_lines) + 1
+    # the new row lands right after Wednesday, before the blank line / next heading —
+    # everything before and after the insertion point is untouched
+    idx = before_lines.index("| Wednesday | artist | 2026-09-14 | | | |")
+    assert after_lines[:idx + 1] == before_lines[:idx + 1]
+    assert after_lines[idx + 1] == "| Phoebe Bridgers | artist | 2026-09-19 |  |  |  |"
+    assert after_lines[idx + 2:] == before_lines[idx + 1:]
+
+
+def test_insert_appends_after_last_concert_row():
+    before = HEAT_DOC
+    after = mh._heat_insert_row(before, "Concerts", {
+        "who": "Mannequin Pussy", "date": "2026-11-14", "fade": "", "fits": "", "note": "same show",
+    })
+    before_lines = before.splitlines()
+    after_lines = after.splitlines()
+    idx = before_lines.index("| Mannequin Pussy | 2026-11-14 | | | same show |")
+    assert len(after_lines) == len(before_lines) + 1
+    assert after_lines[:idx + 1] == before_lines[:idx + 1]
+    assert after_lines[idx + 1] == "| Mannequin Pussy | 2026-11-14 |  |  | same show |"
+    assert after_lines[idx + 2:] == before_lines[idx + 1:]
+
+
+def test_insert_into_table_with_no_data_rows_lands_right_after_separator():
+    doc = """\
+## Vibing
+
+| What | Kind | Started | Fade | Fits | Note |
+|---|---|---|---|---|---|
+
+## Concerts
+"""
+    after = mh._heat_insert_row(doc, "Vibing", {
+        "what": "Wednesday", "kind": "artist", "started": "2026-09-19",
+        "fade": "", "fits": "", "note": "",
+    })
+    lines = after.splitlines()
+    assert lines[3] == "|---|---|---|---|---|---|"
+    assert lines[4] == "| Wednesday | artist | 2026-09-19 |  |  |  |"
+    assert lines[5] == ""  # the blank line before ## Concerts is preserved, unmoved
+
+
+def test_insert_preserves_crlf_line_endings():
+    doc = HEAT_DOC.replace("\n", "\r\n")
+    after = mh._heat_insert_row(doc, "Vibing", {
+        "what": "Wednesday", "kind": "artist", "started": "2026-09-19",
+        "fade": "", "fits": "", "note": "",
+    })
+    assert "\n" not in after.replace("\r\n", "")  # no bare LF snuck in
+    assert after.replace(
+        "| Wednesday | artist | 2026-09-19 |  |  |  |\r\n", ""
+    ) == doc
+
+
+def test_insert_missing_section_raises_without_mutating_caller_text():
+    with pytest.raises(ValueError, match="no '## Concerts' section"):
+        mh._heat_insert_row("## Vibing\n\n| What |\n|---|\n", "Concerts", {"who": "X"})
+
+
+def test_insert_missing_table_under_section_raises():
+    with pytest.raises(ValueError, match="has no table"):
+        mh._heat_insert_row("## Vibing\n\nnothing here\n\n## Concerts\n", "Vibing", {"what": "X"})
+
+
+def test_insert_missing_separator_raises():
+    with pytest.raises(ValueError, match="missing its header separator"):
+        mh._heat_insert_row("## Vibing\n\n| What | Kind |\n| a | b |\n", "Vibing", {"what": "X"})
+
+
+# --------------------------------------------------------- cmd_heat add (#21)
+
+def _add_args(name=None, concert=None, kind=None, fade=None, fits=None, note=None):
+    return SimpleNamespace(action="add", name=name, concert=concert, kind=kind,
+                            fade=fade, fits=fits, note=note)
+
+
+def test_add_vibing_defaults_kind_artist_and_started_today(tmp_path, monkeypatch, capsys):
+    path = _write(tmp_path, HEAT_DOC)
+    monkeypatch.setattr(mh, "HEAT_PATH", path)
+    today = date(2026, 9, 19)
+
+    class FixedDatetime(mh.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return mh.datetime(today.year, today.month, today.day)
+
+    monkeypatch.setattr(mh, "datetime", FixedDatetime)
+
+    mh.cmd_heat(_add_args(name="Phoebe Bridgers"))
+
+    entries, _ = mh._parse_heat(path)
+    new = [e for e in entries if e["name"] == "Phoebe Bridgers"][0]
+    assert new["kind"] == "artist"
+    assert new["started"] == today
+    assert new["fade"] == mh.DEFAULT_HEAT_FADE_DAYS  # blank Fade cell -> default
+    assert new["fits"] == []
+    out = capsys.readouterr().out
+    assert "added Vibing row: Phoebe Bridgers" in out
+
+
+def test_add_concert_populates_who_date_fade_fits_note(tmp_path, monkeypatch):
+    path = _write(tmp_path, HEAT_DOC)
+    monkeypatch.setattr(mh, "HEAT_PATH", path)
+
+    mh.cmd_heat(_add_args(name="Bikini Kill", concert="2026-11-14",
+                           fade="60d", fits="dance, hype", note="same show"))
+
+    entries, _ = mh._parse_heat(path)
+    new = [e for e in entries if e["type"] == "concert" and e["name"] == "Bikini Kill"][0]
+    assert new["date"] == date(2026, 11, 14)
+    assert new["fade"] == 60
+    assert new["fits"] == ["dance", "hype"]
+    assert new["note"] == "same show"
+
+
+def test_add_leaves_every_existing_row_byte_identical_one_line_added(tmp_path, monkeypatch):
+    path = _write(tmp_path, HEAT_DOC)
+    monkeypatch.setattr(mh, "HEAT_PATH", path)
+    before_lines = HEAT_DOC.splitlines()
+
+    mh.cmd_heat(_add_args(name="Phoebe Bridgers"))
+
+    after_lines = open(path, encoding="utf-8").read().splitlines()
+    idx = before_lines.index("| Wednesday | artist | 2026-09-14 | | | |")
+    assert len(after_lines) == len(before_lines) + 1
+    assert after_lines[:idx + 1] == before_lines[:idx + 1]
+    assert after_lines[idx + 2:] == before_lines[idx + 1:]
+
+
+def test_add_creates_missing_file_from_sample_then_appends(tmp_path, monkeypatch):
+    sample = _write(tmp_path, HEAT_DOC, name="sample_heat.md")
+    path = str(tmp_path / "profile" / "heat.md")  # parent dir doesn't exist yet
+    monkeypatch.setattr(mh, "HEAT_PATH", path)
+    monkeypatch.setattr(mh, "HEAT_SAMPLE_PATH", sample)
+
+    mh.cmd_heat(_add_args(name="Wednesday"))
+
+    assert os.path.exists(path)
+    entries, _ = mh._parse_heat(path)
+    assert any(e["name"] == "Wednesday" and e["type"] == "vibing" for e in entries)
+
+
+def test_add_missing_name_rejected_before_any_write(tmp_path, monkeypatch):
+    path = _write(tmp_path, HEAT_DOC)
+    monkeypatch.setattr(mh, "HEAT_PATH", path)
+    before = open(path, encoding="utf-8").read()
+
+    with pytest.raises(SystemExit):
+        mh.cmd_heat(_add_args(name=None))
+
+    assert open(path, encoding="utf-8").read() == before
+
+
+def test_add_kind_with_concert_rejected_before_any_write(tmp_path, monkeypatch):
+    path = _write(tmp_path, HEAT_DOC)
+    monkeypatch.setattr(mh, "HEAT_PATH", path)
+    before = open(path, encoding="utf-8").read()
+
+    with pytest.raises(SystemExit):
+        mh.cmd_heat(_add_args(name="X", concert="2026-11-14", kind="genre"))
+
+    assert open(path, encoding="utf-8").read() == before
+
+
+def test_add_bad_fade_rejected_before_any_write(tmp_path, monkeypatch):
+    path = _write(tmp_path, HEAT_DOC)
+    monkeypatch.setattr(mh, "HEAT_PATH", path)
+    before = open(path, encoding="utf-8").read()
+
+    with pytest.raises(SystemExit):
+        mh.cmd_heat(_add_args(name="X", fade="bogus"))
+
+    assert open(path, encoding="utf-8").read() == before
+
+
+def test_add_bad_concert_date_rejected_before_any_write(tmp_path, monkeypatch):
+    path = _write(tmp_path, HEAT_DOC)
+    monkeypatch.setattr(mh, "HEAT_PATH", path)
+    before = open(path, encoding="utf-8").read()
+
+    with pytest.raises(SystemExit):
+        mh.cmd_heat(_add_args(name="X", concert="not-a-date"))
+
+    assert open(path, encoding="utf-8").read() == before
