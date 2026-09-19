@@ -79,6 +79,19 @@ SCOPE = "playlist-read-private playlist-modify-private playlist-modify-public"
 MIX_PREFIX = "[Mix]"
 
 
+def _prefixed(name, no_prefix=False):
+    """Apply the `[Mix] ` name tag, idempotently.
+
+    Shared by `create` and `replace` so a mix carries the same tag however it was
+    shipped — a rename through `replace` used to slip past it and leave the
+    playlist unfiled. Already-prefixed names pass through untouched, so callers
+    can hand over either `"[Mix] Foo"` or `"Foo"`.
+    """
+    if no_prefix or not name or name.startswith(MIX_PREFIX):
+        return name
+    return f"{MIX_PREFIX} {name}"
+
+
 # ---------------------------------------------------------------- infra
 
 def _db():
@@ -1248,9 +1261,7 @@ def cmd_create(args):
     if not uris:
         sys.exit("No spotify:track: URIs found on stdin or in --uris-file.")
 
-    name = args.name
-    if not args.no_prefix and not name.startswith(MIX_PREFIX):
-        name = f"{MIX_PREFIX} {name}"
+    name = _prefixed(args.name, args.no_prefix)
 
     sp = _client()
     uid = sp.me()["id"]
@@ -1304,15 +1315,18 @@ def cmd_replace(args):
     if not uris:
         sys.exit("No spotify:track: URIs found on stdin or in --uris-file.")
 
+    # Only when a rename was actually asked for — an untouched playlist keeps its name.
+    name = _prefixed(args.name, args.no_prefix) if args.name else None
+
     sp = _client()
     pid = args.playlist.split(":")[-1].split("/")[-1]  # accept id, uri, or url
     # First 100 replace the contents; the rest are appended in order.
     sp.playlist_replace_items(pid, uris[:100])
     for i in range(100, len(uris), 100):
         sp.playlist_add_items(pid, uris[i:i + 100])
-    if args.name or args.desc:
+    if name or args.desc:
         sp.playlist_change_details(
-            pid, **({"name": args.name} if args.name else {}),
+            pid, **({"name": name} if name else {}),
             **({"description": args.desc} if args.desc else {}),
         )
 
@@ -1328,13 +1342,13 @@ def cmd_replace(args):
         cur = db.execute(
             "UPDATE created_playlist SET name=?, track_count=?, url=?, created_at=?, alive=1 "
             "WHERE playlist_id=?",
-            (args.name or pl["name"], len(uris), url, now, pid),
+            (name or pl["name"], len(uris), url, now, pid),
         )
         if cur.rowcount == 0:
             db.execute(
                 "INSERT INTO created_playlist (playlist_id, name, tool, provider, url, "
                 "created_at, alive, track_count) VALUES (?,?,?,?,?,?,1,?)",
-                (pid, args.name or pl["name"], "Mix", "spotify", url, now, len(uris)),
+                (pid, name or pl["name"], "Mix", "spotify", url, now, len(uris)),
             )
         if args.cooldown:
             db.executemany(
@@ -1669,6 +1683,8 @@ def main():
     r.add_argument("--playlist", required=True, help="playlist id, uri, or url to overwrite")
     r.add_argument("--name", help="optionally rename the playlist")
     r.add_argument("--desc", help="optionally reset the description")
+    r.add_argument("--no-prefix", action="store_true",
+                   help=f"with --name, don't prepend the '{MIX_PREFIX}' name tag")
     r.add_argument("--uris-file", help="file of URIs (else read stdin)")
     r.add_argument("--record", action="store_true",
                    help="update the created_playlist row (or insert if missing)")

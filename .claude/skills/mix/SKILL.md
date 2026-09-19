@@ -319,6 +319,8 @@ remove), so saving first costs nothing and gives Cory something real to react to
 - Every mix is auto-prefixed **`[Mix] `** in its name (so generated playlists group
   together in the library — Spotify's API can't file into folders). It's idempotent, so
   you can pass `--name "[Mix] …"` or plain `--name "…"`; opt out with `--no-prefix`.
+  `replace --name` applies the same tag, so renaming an existing mix can't quietly
+  drop it out of the group; `replace` without `--name` leaves the name alone.
 - Playlists are **private** by default. Only pass `--public` if asked.
 - `--record` logs it to `created_playlist` so it shows in the app's Recently Created page.
 - `--cooldown` (with `--record`) writes the tracks to `track_history` so future Block Mix /
