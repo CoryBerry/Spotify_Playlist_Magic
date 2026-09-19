@@ -1584,6 +1584,275 @@ def cmd_ice(args):
     print(f"ICED  {name} — {artist}  ({dur}){why}  [{uri}]")
 
 
+# ---------------------------------------------------------------- heat
+# The mirror image of the ice box: ice pushes tracks out of builds, heat pulls
+# them in. Unlike ice it's not a DB table — it's a hand-authored diary in the
+# private overlay (profile/heat.md, gitignored; missing entirely on an
+# unconfigured clone, which is not an error) because "what I'm into this month"
+# is personal, slow-moving taste, not build state the app itself needs to own.
+# Two shapes, both curves rather than switches:
+#   Vibing   — a plain fade: "I'm into dance-punk". Starts hot, steps down over
+#              a window (Fade, default 30d), then expires.
+#   Concerts — ramps UP toward a show date, then fades back down (afterglow)
+#              afterward, reusing the same fade curve.
+# `today` is always an injected parameter, never read inside the curve math, so
+# every edge (the tier boundaries especially) tests offline — see test_heat.py.
+# Nothing consumes this yet (no build reads it) — this is just the doc format,
+# the curve, and `heat list` to prove it out from the command line.
+
+HEAT_PATH = os.path.join(REPO_ROOT, "profile", "heat.md")
+DEFAULT_HEAT_FADE_DAYS = 30
+DEFAULT_HEAT_TIERS = (30, 15, 5)   # % share of a mix a tier-1/2/3 entry may claim
+DEFAULT_HEAT_CAP = 50              # % of a mix heat may claim in total, before scaling
+
+_HEAT_TIERS_RE = re.compile(r"^Tiers:\s*(\d+)\s*/\s*(\d+)\s*/\s*(\d+)\s*$", re.IGNORECASE)
+_HEAT_CAP_RE = re.compile(r"^Cap:\s*(\d+)\s*$", re.IGNORECASE)
+_HEAT_FADE_RE = re.compile(r"^(\d+)\s*d$", re.IGNORECASE)
+_HEAT_SEP_RE = re.compile(r"^:?-+:?$")
+_HEAT_SECTIONS = {"vibing": "vibing", "concerts": "concert", "cooled off": "cooled"}
+
+
+def _heat_split_row(line):
+    """One pipe-table row -> stripped cells, tolerant of missing outer pipes."""
+    line = line.strip()
+    if line.startswith("|"):
+        line = line[1:]
+    if line.endswith("|"):
+        line = line[:-1]
+    return [c.strip() for c in line.split("|")]
+
+
+def _heat_parse_fade(raw, default_days=DEFAULT_HEAT_FADE_DAYS):
+    """A `Fade` cell ('60d' or blank) -> days. Raises on anything else — the
+    caller turns that into a skipped-row report rather than a crash."""
+    raw = (raw or "").strip()
+    if not raw:
+        return default_days
+    m = _HEAT_FADE_RE.match(raw)
+    if not m:
+        raise ValueError(f"bad Fade {raw!r} (want e.g. '30d', or blank for {default_days}d)")
+    return int(m.group(1))
+
+
+def _heat_parse_fits(raw):
+    """Comma-separated `Fits` cell -> term list; blank -> [] (fits anywhere)."""
+    return [t.strip() for t in (raw or "").split(",") if t.strip()]
+
+
+def _heat_parse_date(raw):
+    return datetime.strptime((raw or "").strip(), "%Y-%m-%d").date()
+
+
+def _parse_heat(path):
+    """Read a heat.md file into `(entries, settings)`.
+
+    entries: dicts with `type` ("vibing"/"concert"), `name`, `fade` (days),
+    `fits` (list of terms), `note`, plus `started` (vibing) or `date` (concert).
+    settings: `{"tiers": (t1, t2, t3), "cap": pct}` — `Tiers:`/`Cap:` lines
+    before the first `##` heading override the module defaults so retuning the
+    curve is a one-word doc edit, not a code change.
+
+    A malformed row (bad date, bad Fade, blank name) is skipped and reported on
+    stderr rather than raising — a typo in a hand-authored doc must not break a
+    build. `## Cooled off` is read and ignored entirely: a parking lot, not data.
+    """
+    settings = {"tiers": DEFAULT_HEAT_TIERS, "cap": DEFAULT_HEAT_CAP}
+    entries = []
+    section = None   # None (preamble) / "vibing" / "concert" / "cooled"
+    header = None
+
+    with open(path, encoding="utf-8") as fh:
+        raw_lines = fh.read().splitlines()
+
+    for raw_line in raw_lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        if line.startswith("#"):
+            title = line.lstrip("#").strip().lower()
+            if title in _HEAT_SECTIONS:
+                section, header = _HEAT_SECTIONS[title], None
+            continue  # the doc's own "# Heat — Cory" h1 falls through here too
+
+        if section is None:
+            m = _HEAT_TIERS_RE.match(line)
+            if m:
+                settings["tiers"] = tuple(int(m.group(i)) for i in (1, 2, 3))
+                continue
+            m = _HEAT_CAP_RE.match(line)
+            if m:
+                settings["cap"] = int(m.group(1))
+                continue
+            continue  # blockquote / prose before the first section
+
+        if section == "cooled" or not line.startswith("|"):
+            continue
+
+        cells = _heat_split_row(line)
+        if all(_HEAT_SEP_RE.match(c) for c in cells):
+            continue  # the `|---|---|` alignment row
+        if header is None:
+            header = [c.lower() for c in cells]
+            continue
+
+        row = dict(zip(header, cells))
+        try:
+            if section == "vibing":
+                name = (row.get("what") or "").strip()
+                if not name:
+                    raise ValueError("blank What")
+                entries.append({
+                    "type": "vibing",
+                    "name": name,
+                    "kind": (row.get("kind") or "").strip(),
+                    "started": _heat_parse_date(row["started"]),
+                    "fade": _heat_parse_fade(row.get("fade")),
+                    "fits": _heat_parse_fits(row.get("fits")),
+                    "note": (row.get("note") or "").strip(),
+                })
+            else:
+                name = (row.get("who") or "").strip()
+                if not name:
+                    raise ValueError("blank Who")
+                entries.append({
+                    "type": "concert",
+                    "name": name,
+                    "date": _heat_parse_date(row["date"]),
+                    "fade": _heat_parse_fade(row.get("fade")),
+                    "fits": _heat_parse_fits(row.get("fits")),
+                    "note": (row.get("note") or "").strip(),
+                })
+        except (KeyError, ValueError) as exc:
+            print(f"# skipped malformed heat row: {line!r} ({exc})", file=sys.stderr)
+
+    return entries, settings
+
+
+def _heat_fade_tier(elapsed, fade, phase):
+    """Shared fade curve for Vibing and Concert afterglow.
+
+    Steps tier 1 -> 2 -> 3 in three equal slices of `fade` days, then expires.
+    Generalizes to any window: 0-9/10-19/20-29/30 on a 30d fade; 0-1/2-3/4 on 5d.
+    """
+    if elapsed >= fade:
+        return 0, "expired"
+    return min(3, elapsed * 3 // fade + 1), phase
+
+
+def _heat_tier(entry, today):
+    """(tier, phase) for one heat entry as of `today` (a `date`, injected).
+
+    tier is 0-3 (0 = inactive: dormant or expired). phase is one of fade / ramp /
+    afterglow / dormant / expired. `today` is never read from the clock inside
+    this function — every caller (including tests) passes it explicitly.
+    """
+    if entry["type"] == "vibing":
+        elapsed = (today - entry["started"]).days
+        return _heat_fade_tier(elapsed, entry["fade"], "fade")
+
+    until = (entry["date"] - today).days
+    if until >= 0:
+        if until > 90:
+            return 0, "dormant"      # far-off show doesn't soak every mix
+        if until > 30:
+            return 3, "ramp"
+        if until > 7:
+            return 2, "ramp"
+        return 1, "ramp"             # peak the final week
+    return _heat_fade_tier(-until - 1, entry["fade"], "afterglow")
+
+
+def _heat_slots(entries, total, settings):
+    """Per-entry track ceilings for a `total`-track mix — a max, not a quota.
+
+    `entries` must already be filtered to active (tier 1-3), each carrying its
+    `"tier"` key. Each entry's tier maps to a % share (`settings["tiers"]`,
+    1-indexed); shares are summed and, if the sum exceeds `settings["cap"]`,
+    every share is scaled down proportionally so a hot week can't eat the whole
+    playlist. Floors at 1 for an active entry — 5% of a 15-track mix is one
+    track, not zero — which is the one case that can push the realized total
+    slightly past the cap. Returns a list of ints parallel to `entries`.
+    """
+    if total <= 0 or not entries:
+        return [0] * len(entries)
+    tiers = settings.get("tiers", DEFAULT_HEAT_TIERS)
+    cap = settings.get("cap", DEFAULT_HEAT_CAP)
+    shares = [tiers[e["tier"] - 1] for e in entries]
+    share_sum = sum(shares)
+    scale = (cap / share_sum) if share_sum > cap else 1.0
+    return [max(1, int(share * scale / 100 * total)) for share in shares]
+
+
+def _heat_fits(entry, brief_terms):
+    """True if `entry` fits a brief carrying `brief_terms`.
+
+    An entry with a blank `Fits` column fits anywhere (the common case — most
+    rows leave it blank); otherwise at least one of its comma-separated terms
+    must appear in `brief_terms`. Case-insensitive. Not consumed until briefs
+    exist (a later ticket) — the column and this check just land here first.
+    """
+    fits = entry.get("fits") or []
+    if not fits:
+        return True
+    terms = {t.strip().lower() for t in brief_terms}
+    return any(f.strip().lower() in terms for f in fits)
+
+
+def cmd_heat(args):
+    """`heat list` — read profile/heat.md and print each entry's current phase.
+
+    A missing profile/heat.md is not an error (unconfigured clone) — it just
+    says so and exits 0, same as every other skill's no-op-gracefully rule.
+    """
+    if not os.path.exists(HEAT_PATH):
+        print("nothing hot")
+        return
+
+    entries, settings = _parse_heat(HEAT_PATH)
+    today = datetime.now().date()
+    for e in entries:
+        tier, phase = _heat_tier(e, today)
+        e["tier"], e["phase"] = tier, phase
+        e["share"] = settings["tiers"][tier - 1] if tier else 0
+
+    if not entries:
+        print("nothing hot")
+        return
+
+    total_slots = 0
+    if args.for_n:
+        active = [e for e in entries if e["tier"] >= 1]
+        for e, n in zip(active, _heat_slots(active, args.for_n, settings)):
+            e["slot"] = n
+        total_slots = sum(e["slot"] for e in active)
+
+    if args.json:
+        out = []
+        for e in entries:
+            row = dict(e)
+            if e["type"] == "vibing":
+                row["started"] = row["started"].isoformat()
+            else:
+                row["date"] = row["date"].isoformat()
+            if args.for_n:
+                row.setdefault("slot", 0)
+            out.append(row)
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return
+
+    for e in entries:
+        when = f"since {e['started']}" if e["type"] == "vibing" else f"on {e['date']}"
+        slot = f"  slot<={e['slot']}" if "slot" in e else ""
+        fits = f"  [{', '.join(e['fits'])}]" if e["fits"] else ""
+        note = f"  — {e['note']}" if e.get("note") else ""
+        print(f"{e['phase']:>9}  tier{e['tier']}  {e['share']:>2}%  "
+              f"{e['name']} ({when}){slot}{fits}{note}")
+    if args.for_n:
+        print(f"# {total_slots}/{args.for_n} slots claimed by heat (cap {settings['cap']}%)",
+              file=sys.stderr)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Plumbing for the `mix` skill.")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1720,6 +1989,13 @@ def main():
                    help="add: explicit never-list (the default when no --months)")
     i.add_argument("--reason", default=None, help="add: why (e.g. 'heard to death')")
     i.set_defaults(func=cmd_ice)
+
+    h = sub.add_parser("heat", help="read profile/heat.md's fade/concert curve (mirror of ice)")
+    h.add_argument("action", choices=["list"])
+    h.add_argument("--for", dest="for_n", type=int, default=0, metavar="N",
+                   help="also compute each active entry's slot ceiling for an N-track mix")
+    h.add_argument("--json", action="store_true")
+    h.set_defaults(func=cmd_heat)
 
     args = ap.parse_args()
     args.func(args)
