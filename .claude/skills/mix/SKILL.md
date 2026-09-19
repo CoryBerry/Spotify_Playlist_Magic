@@ -73,6 +73,19 @@ than centering the mix on it. Known go-to sources by usage include: Rising Appal
 Traditional folk (40×), Sounds & Musics Instrumental selects (38×), Cory's Folk Selects
 (25×), Rising Hall Rivers (17×), and the `selects` family generally.
 
+### 1b. Check the heat
+
+Before pulling rosters, glance at what's currently hot:
+
+```
+PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py heat list
+```
+
+This is context, not action — you don't do anything with it yet. Carry the brief's own vibe
+words forward to `--heat-fits` when you call `roster --heat` in the next step. **See `## Heat`
+below before you touch it: the rule that governs everything heat does is one blunt sentence,
+and skipping it is exactly how a yoga mix ends up with dance-punk in it.**
+
 ### 2. Build a roster — deep cuts, not hits
 **Prefer `roster` over `tracks` for curation.** Cory builds album playlists specifically to
 hear **deep cuts**, and calls popularity-led mixes *boring*. `roster` groups each source's
@@ -290,6 +303,10 @@ genre clumps; give the mix a named shape (e.g. Slow Burn = ambient → indie →
 → landing; Cruise Control = one steady mid-tempo gear throughout). Write the chosen URIs
 (one per line) to a file in the scratchpad directory.
 
+**Heat rows compete for slots like any other candidate.** Spread them across the arc rather
+than clumping them into one block, and they're still bound by everything else in this step —
+the hard vetoes and the ice box included. Heat never overrides an exclusion (see `## Heat`).
+
 At ~18–24 tracks you can hand-order by eye. **For a bigger pool or an explicit
 "ride ups and downs" / dynamic-arc request, use the `sequence` command** instead of
 re-deriving the arc math by hand (that's how the first big one burned a pile of iterations):
@@ -350,6 +367,10 @@ by section with your design notes)**, and **ask if there are any changes** — s
 trim/extend, re-sequence. Making a mix is reversible (unfollow, or Recently Created →
 remove), so saving first costs nothing and gives Cory something real to react to.
 
+If heat played any part, **name the picks and any skips**, e.g. *"4 from Modest Mouse (show
+Oct 15); skipped the dance-punk row, wrong mix for it."* Same spirit as the "say where it came
+from" rule below — a heat pick (or a heat veto) is exactly as worth surfacing as a source is.
+
 - Every mix is auto-prefixed **`[Mix] `** in its name (so generated playlists group
   together in the library — Spotify's API can't file into folders). It's idempotent, so
   you can pass `--name "[Mix] …"` or plain `--name "…"`; opt out with `--no-prefix`.
@@ -392,6 +413,36 @@ PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py ice thaw "Bad Girls"   # UR
 
 `ice add` reports the exact track it matched (name — artist) — read it back before trusting a
 name-based freeze; if it grabbed the wrong track, thaw it and re-add by URI.
+
+## Heat — what Cory's into right now
+
+`profile/heat.md` tracks a fading **Vibing** artist/genre or a **Concert** ramping toward its
+date and glowing afterward. `roster --heat` (step 2) annotates the pool you already pulled;
+this section is the judgment call on what to actually do with that annotation.
+
+> **Pick sources for the brief, then apply heat to what those sources returned. Never the
+> other way around.** Heat is not a reason to add a playlist, widen a search, or reach into
+> the Spotify catalog. If the yoga pools hold no dance-punk, a dance-punk row contributes
+> nothing to a yoga mix — that is the system working, not a gap to fill.
+
+**The share is a ceiling, not a quota.** `roster --heat --for N`'s stderr footer reads like
+`Dance-punk 🔥2 fade up to 6, found 23` — the number after `up to` is the most heat may claim,
+never a target to pad toward. `up to 12, found 4` means ship 4 and move on.
+
+**Pass the brief's own vibe words as `--heat-fits chill,folk`** so a scoped row (heat.md's
+`Fits` column) can opt itself out before it ever matches anything. Even past that gate and
+inside the ceiling, **you still hold a veto**: if a heat row is in scope and in supply but
+would actually wreck the mix, drop it and say so in one line in the reply (step 4). Silent
+drops are worse than wrong picks — Cory can't correct what he can't see.
+
+**Heat never overrides an exclusion.** It doesn't add a track past the ice box, past the
+7-day cooldown, or past a hard veto in `profile/CONTEXT.md` — all three win regardless of how
+hot an artist or genre currently is.
+
+**One documented conflict, not special-cased:** `--per-artist N` (step 2) caps how many tracks
+one artist can contribute; a heat slot ceiling wants to give that same artist more room. Set
+below the heat slot count and `--per-artist` quietly wins, so heat never actually shows up.
+Don't set `--per-artist` lower than the heat ceiling for an artist you want heat to place.
 
 ## Big "best of the year" mixes (multi-source, cross-referenced)
 
