@@ -21,6 +21,7 @@ Then fill in `profile/CONTEXT.md` and `profile/playlists.md`, and run a sync (be
 |---|---|---|
 | `CONTEXT.md` | **Live-read.** Who you are, what you like, hard vetoes, house rules for building mixes. | You |
 | `playlists.md` | **Live-read.** Your pool cheat sheet — what each playlist is for and how much to trust it. | You |
+| `heat.md` | **Live-read.** What you're into *right now* — fading "vibing" entries and ramping/afterglowing concert dates. Read back offline via the `mix` skill's `heat list`. | You |
 | `notes/` | **Live-read.** Personal backlog and scratch notes (`TODO.md`, `IDEAS.md`, `ISSUES.md`). | You |
 | `memory/` | **Mirror.** Copy of this project's agent memory. Backup only — `~/.claude/…/memory/` stays authoritative. | `profile-sync.ps1` |
 | `backups/` | **Mirror.** `spotify_tools.sql` — a git-friendly dump of the app DB (tags, ice box, build history, usage). | `profile-sync.ps1` |

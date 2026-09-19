@@ -28,7 +28,8 @@ regenerable `playlist_cache` blob so the skill can see its own playlists.
 The `roster` verb can optionally annotate each candidate with its lead artist's
 Last.fm tags (`--tags`, opt-in — needs LASTFM_API_KEY; plain roster stays offline
 and Last.fm-free). Tags give mood/genre context for curation now that Spotify's
-/audio-features is unavailable.
+/audio-features is unavailable. It can also annotate with `profile/heat.md`'s
+current heat (`--heat`, `--heat-fits <terms>`) — see the heat section below.
 
 Examples:
     python mix_helper.py sources --search chill
@@ -77,6 +78,19 @@ SCOPE = "playlist-read-private playlist-modify-private playlist-modify-public"
 # in the library (Spotify's API can't file into folders). Idempotent; opt out
 # with `create --no-prefix`.
 MIX_PREFIX = "[Mix]"
+
+
+def _prefixed(name, no_prefix=False):
+    """Apply the `[Mix] ` name tag, idempotently.
+
+    Shared by `create` and `replace` so a mix carries the same tag however it was
+    shipped — a rename through `replace` used to slip past it and leave the
+    playlist unfiled. Already-prefixed names pass through untouched, so callers
+    can hand over either `"[Mix] Foo"` or `"Foo"`.
+    """
+    if no_prefix or not name or name.startswith(MIX_PREFIX):
+        return name
+    return f"{MIX_PREFIX} {name}"
 
 
 # ---------------------------------------------------------------- infra
@@ -489,6 +503,26 @@ def _filter_reason(t, args):
     if args.pop_max is not None and pop > args.pop_max:
         return "pop"
     return None
+
+
+def _lastfm_tag_lookup(limit):
+    """Build a cached `artist -> [tag names]` Last.fm lookup at a given `limit`.
+
+    Shared by `--tags` (limit 5 — enough for a mood/genre hint) and `--heat`
+    genre matching (limit 10 — a genre like `dance-punk` often isn't in an
+    artist's top 5 tags). One lookup, one cache per call site, parameterized
+    instead of duplicated.
+    """
+    import lastfm_service
+    cache = {}
+
+    def lookup(artist):
+        key = artist.lower()
+        if key not in cache:
+            cache[key] = [d["name"] for d in lastfm_service.artist_top_tags(artist, limit=limit)]
+        return cache[key]
+
+    return lookup
 
 
 def _annotate_tags(rows, lookup):
@@ -1069,10 +1103,7 @@ def cmd_roster(args):
         except lastfm_service.LastfmError as exc:
             sys.exit(f"--tags needs a Last.fm key: {exc}")
 
-        def _lookup(artist):
-            return [d["name"] for d in lastfm_service.artist_top_tags(artist, limit=5)]
-
-        resolved, total, unknown = _annotate_tags(rows, _lookup)
+        resolved, total, unknown = _annotate_tags(rows, _lastfm_tag_lookup(5))
         print(f"# tags: {resolved}/{total} artists resolved ({unknown} unknown to Last.fm)",
               file=sys.stderr)
 
@@ -1095,6 +1126,56 @@ def cmd_roster(args):
         print(f"# mine: {matched}/{total} candidates carry a personal signal "
               f"({len(top)} scrobbled, {len(loved)} loved for {user})", file=sys.stderr)
 
+    # --heat: annotate with profile/heat.md's current heat. Supply is the gate —
+    # heat only ever matches against these already-selected sources, never widens
+    # the search — so a yoga brief with no dance-punk in its pools scores zero
+    # heat no matter how hot dance-punk is. --heat-fits is the second gate: a row
+    # whose own Fits column doesn't overlap the brief's terms is skipped before
+    # it ever gets a chance to match a track. Annotation only — same as --tags/
+    # --mine, this never filters or reorders rows.
+    if args.heat:
+        for t in rows:
+            t["heat"] = None
+        if not os.path.exists(HEAT_PATH):
+            print("# heat: no profile/heat.md, skipping", file=sys.stderr)
+        else:
+            entries, settings = _parse_heat(HEAT_PATH)
+            today = datetime.now().date()
+            active = _heat_active(entries, today)
+            brief_terms = ([t.strip() for t in args.heat_fits.split(",") if t.strip()]
+                           if args.heat_fits else None)
+            in_scope, skipped = _heat_gate(active, brief_terms)
+
+            for e in skipped:
+                print(f"# heat: {e['name']} — skipped, Fits({', '.join(e['fits'])}) "
+                      f"doesn't match brief({', '.join(brief_terms)})", file=sys.stderr)
+
+            # Genre matching needs Last.fm; artist-only heat must never touch it.
+            # Hard-fail (naming the offending rows) rather than silently going
+            # tagless — same policy as --tags, for the same reason.
+            genre_rows = [e for e in in_scope if (e.get("kind") or "artist") == "genre"]
+            tag_lookup = None
+            if genre_rows:
+                import lastfm_service
+                try:
+                    lastfm_service.get_api_key()
+                except lastfm_service.LastfmError as exc:
+                    offenders = ", ".join(e["name"] for e in genre_rows)
+                    sys.exit(f"--heat needs a Last.fm key for genre row(s) {offenders}: {exc}")
+                tag_lookup = _lastfm_tag_lookup(10)
+
+            found = _annotate_heat(rows, in_scope, tag_lookup)
+            if in_scope:
+                slots = _heat_slots(in_scope, len(rows), settings)
+                parts = []
+                for e, n, f in zip(in_scope, slots, found):
+                    extra = ""
+                    if e["type"] == "concert" and e["phase"] == "ramp":
+                        extra = f" (show in {(e['date'] - today).days}d)"
+                    parts.append(f"{e['name']} {HEAT_GLYPH}{e['tier']} {e['phase']}{extra} "
+                                 f"up to {n}, found {f}")
+                print("# heat: " + " · ".join(parts), file=sys.stderr)
+
     total_ms = sum(t.get("duration_ms") or 0 for t in rows)
     # Filter notes go to stderr in both modes (like --tags) — a --json caller wants
     # to know the era filter ate half the pool just as much as a text one does.
@@ -1114,10 +1195,12 @@ def cmd_roster(args):
         tagstr = f"  [{', '.join(t['tags'])}]" if t.get("tags") else ""
         year = f" · {t['year']}" if t.get("year") else ""
         exp = "  [E]" if t.get("explicit") else ""
-        # --mine rides in the left gutter beside pop/ice so it scans as a column and
-        # stays clear of --tags' trailing bracket.
+        # --mine and --heat ride in the left gutter beside pop/ice so they scan as
+        # columns and stay clear of --tags' trailing bracket.
         mine = f"  {_mine_label(t.get('mine')):>5}" if args.mine else ""
-        print(f"{t['pop']:>3}  {t['ice']:>5}{mine}  {_mmss(t.get('duration_ms')):>5}  {t['uri']}  "
+        heat_glyph = (HEAT_GLYPH + str(t["heat"]["tier"])) if t.get("heat") else "·"
+        heat = f"  {heat_glyph:>3}" if args.heat else ""
+        print(f"{t['pop']:>3}  {t['ice']:>5}{mine}{heat}  {_mmss(t.get('duration_ms')):>5}  {t['uri']}  "
               f"{t['name']} — {t['artist']}  ({t['album']}{year}){exp}{tagstr}")
     mode = "top" if args.top else ("band+jitter" if args.jitter else "band")
     print(f"# {len(rows)} candidates from {len(args.sources)} source(s); "
@@ -1248,9 +1331,7 @@ def cmd_create(args):
     if not uris:
         sys.exit("No spotify:track: URIs found on stdin or in --uris-file.")
 
-    name = args.name
-    if not args.no_prefix and not name.startswith(MIX_PREFIX):
-        name = f"{MIX_PREFIX} {name}"
+    name = _prefixed(args.name, args.no_prefix)
 
     sp = _client()
     uid = sp.me()["id"]
@@ -1304,15 +1385,18 @@ def cmd_replace(args):
     if not uris:
         sys.exit("No spotify:track: URIs found on stdin or in --uris-file.")
 
+    # Only when a rename was actually asked for — an untouched playlist keeps its name.
+    name = _prefixed(args.name, args.no_prefix) if args.name else None
+
     sp = _client()
     pid = args.playlist.split(":")[-1].split("/")[-1]  # accept id, uri, or url
     # First 100 replace the contents; the rest are appended in order.
     sp.playlist_replace_items(pid, uris[:100])
     for i in range(100, len(uris), 100):
         sp.playlist_add_items(pid, uris[i:i + 100])
-    if args.name or args.desc:
+    if name or args.desc:
         sp.playlist_change_details(
-            pid, **({"name": args.name} if args.name else {}),
+            pid, **({"name": name} if name else {}),
             **({"description": args.desc} if args.desc else {}),
         )
 
@@ -1328,13 +1412,13 @@ def cmd_replace(args):
         cur = db.execute(
             "UPDATE created_playlist SET name=?, track_count=?, url=?, created_at=?, alive=1 "
             "WHERE playlist_id=?",
-            (args.name or pl["name"], len(uris), url, now, pid),
+            (name or pl["name"], len(uris), url, now, pid),
         )
         if cur.rowcount == 0:
             db.execute(
                 "INSERT INTO created_playlist (playlist_id, name, tool, provider, url, "
                 "created_at, alive, track_count) VALUES (?,?,?,?,?,?,1,?)",
-                (pid, args.name or pl["name"], "Mix", "spotify", url, now, len(uris)),
+                (pid, name or pl["name"], "Mix", "spotify", url, now, len(uris)),
             )
         if args.cooldown:
             db.executemany(
@@ -1570,6 +1654,354 @@ def cmd_ice(args):
     print(f"ICED  {name} — {artist}  ({dur}){why}  [{uri}]")
 
 
+# ---------------------------------------------------------------- heat
+# The mirror image of the ice box: ice pushes tracks out of builds, heat pulls
+# them in. Unlike ice it's not a DB table — it's a hand-authored diary in the
+# private overlay (profile/heat.md, gitignored; missing entirely on an
+# unconfigured clone, which is not an error) because "what I'm into this month"
+# is personal, slow-moving taste, not build state the app itself needs to own.
+# Two shapes, both curves rather than switches:
+#   Vibing   — a plain fade: "I'm into dance-punk". Starts hot, steps down over
+#              a window (Fade, default 30d), then expires.
+#   Concerts — ramps UP toward a show date, then fades back down (afterglow)
+#              afterward, reusing the same fade curve.
+# `today` is always an injected parameter, never read inside the curve math, so
+# every edge (the tier boundaries especially) tests offline — see test_heat.py.
+# `roster --heat` (below) is the one consumer so far: it annotates the candidate
+# pool `roster` already built, gated by supply (heat can't add a source) and,
+# opt-in via `--heat-fits`, by each entry's own `Fits` scope. No *build* verb
+# reads it yet — annotation only.
+
+HEAT_PATH = os.path.join(REPO_ROOT, "profile", "heat.md")
+HEAT_GLYPH = "\U0001f525"  # named so it can sit inside an f-string {expr} (Python <3.12 rejects a literal escape there)
+DEFAULT_HEAT_FADE_DAYS = 30
+DEFAULT_HEAT_TIERS = (30, 15, 5)   # % share of a mix a tier-1/2/3 entry may claim
+DEFAULT_HEAT_CAP = 50              # % of a mix heat may claim in total, before scaling
+
+_HEAT_TIERS_RE = re.compile(r"^Tiers:\s*(\d+)\s*/\s*(\d+)\s*/\s*(\d+)\s*$", re.IGNORECASE)
+_HEAT_CAP_RE = re.compile(r"^Cap:\s*(\d+)\s*$", re.IGNORECASE)
+_HEAT_FADE_RE = re.compile(r"^(\d+)\s*d$", re.IGNORECASE)
+_HEAT_SEP_RE = re.compile(r"^:?-+:?$")
+_HEAT_SECTIONS = {"vibing": "vibing", "concerts": "concert", "cooled off": "cooled"}
+
+
+def _heat_split_row(line):
+    """One pipe-table row -> stripped cells, tolerant of missing outer pipes."""
+    line = line.strip()
+    if line.startswith("|"):
+        line = line[1:]
+    if line.endswith("|"):
+        line = line[:-1]
+    return [c.strip() for c in line.split("|")]
+
+
+def _heat_parse_fade(raw, default_days=DEFAULT_HEAT_FADE_DAYS):
+    """A `Fade` cell ('60d' or blank) -> days. Raises on anything else — the
+    caller turns that into a skipped-row report rather than a crash."""
+    raw = (raw or "").strip()
+    if not raw:
+        return default_days
+    m = _HEAT_FADE_RE.match(raw)
+    if not m:
+        raise ValueError(f"bad Fade {raw!r} (want e.g. '30d', or blank for {default_days}d)")
+    return int(m.group(1))
+
+
+def _heat_parse_fits(raw):
+    """Comma-separated `Fits` cell -> term list; blank -> [] (fits anywhere)."""
+    return [t.strip() for t in (raw or "").split(",") if t.strip()]
+
+
+def _heat_parse_date(raw):
+    return datetime.strptime((raw or "").strip(), "%Y-%m-%d").date()
+
+
+def _parse_heat(path):
+    """Read a heat.md file into `(entries, settings)`.
+
+    entries: dicts with `type` ("vibing"/"concert"), `name`, `fade` (days),
+    `fits` (list of terms), `note`, plus `started` (vibing) or `date` (concert).
+    settings: `{"tiers": (t1, t2, t3), "cap": pct}` — `Tiers:`/`Cap:` lines
+    before the first `##` heading override the module defaults so retuning the
+    curve is a one-word doc edit, not a code change.
+
+    A malformed row (bad date, bad Fade, blank name) is skipped and reported on
+    stderr rather than raising — a typo in a hand-authored doc must not break a
+    build. `## Cooled off` is read and ignored entirely: a parking lot, not data.
+    """
+    settings = {"tiers": DEFAULT_HEAT_TIERS, "cap": DEFAULT_HEAT_CAP}
+    entries = []
+    section = None   # None (preamble) / "vibing" / "concert" / "cooled"
+    header = None
+
+    with open(path, encoding="utf-8") as fh:
+        raw_lines = fh.read().splitlines()
+
+    for raw_line in raw_lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        if line.startswith("#"):
+            title = line.lstrip("#").strip().lower()
+            if title in _HEAT_SECTIONS:
+                section, header = _HEAT_SECTIONS[title], None
+            continue  # the doc's own "# Heat — Cory" h1 falls through here too
+
+        if section is None:
+            m = _HEAT_TIERS_RE.match(line)
+            if m:
+                settings["tiers"] = tuple(int(m.group(i)) for i in (1, 2, 3))
+                continue
+            m = _HEAT_CAP_RE.match(line)
+            if m:
+                settings["cap"] = int(m.group(1))
+                continue
+            continue  # blockquote / prose before the first section
+
+        if section == "cooled" or not line.startswith("|"):
+            continue
+
+        cells = _heat_split_row(line)
+        if all(_HEAT_SEP_RE.match(c) for c in cells):
+            continue  # the `|---|---|` alignment row
+        if header is None:
+            header = [c.lower() for c in cells]
+            continue
+
+        row = dict(zip(header, cells))
+        try:
+            if section == "vibing":
+                name = (row.get("what") or "").strip()
+                if not name:
+                    raise ValueError("blank What")
+                entries.append({
+                    "type": "vibing",
+                    "name": name,
+                    "kind": (row.get("kind") or "").strip(),
+                    "started": _heat_parse_date(row["started"]),
+                    "fade": _heat_parse_fade(row.get("fade")),
+                    "fits": _heat_parse_fits(row.get("fits")),
+                    "note": (row.get("note") or "").strip(),
+                })
+            else:
+                name = (row.get("who") or "").strip()
+                if not name:
+                    raise ValueError("blank Who")
+                entries.append({
+                    "type": "concert",
+                    "name": name,
+                    "date": _heat_parse_date(row["date"]),
+                    "fade": _heat_parse_fade(row.get("fade")),
+                    "fits": _heat_parse_fits(row.get("fits")),
+                    "note": (row.get("note") or "").strip(),
+                })
+        except (KeyError, ValueError) as exc:
+            print(f"# skipped malformed heat row: {line!r} ({exc})", file=sys.stderr)
+
+    return entries, settings
+
+
+def _heat_fade_tier(elapsed, fade, phase):
+    """Shared fade curve for Vibing and Concert afterglow.
+
+    Steps tier 1 -> 2 -> 3 in three equal slices of `fade` days, then expires.
+    Generalizes to any window: 0-9/10-19/20-29/30 on a 30d fade; 0-1/2-3/4 on 5d.
+    """
+    if elapsed >= fade:
+        return 0, "expired"
+    return min(3, elapsed * 3 // fade + 1), phase
+
+
+def _heat_tier(entry, today):
+    """(tier, phase) for one heat entry as of `today` (a `date`, injected).
+
+    tier is 0-3 (0 = inactive: dormant or expired). phase is one of fade / ramp /
+    afterglow / dormant / expired. `today` is never read from the clock inside
+    this function — every caller (including tests) passes it explicitly.
+    """
+    if entry["type"] == "vibing":
+        elapsed = (today - entry["started"]).days
+        return _heat_fade_tier(elapsed, entry["fade"], "fade")
+
+    until = (entry["date"] - today).days
+    if until >= 0:
+        if until > 90:
+            return 0, "dormant"      # far-off show doesn't soak every mix
+        if until > 30:
+            return 3, "ramp"
+        if until > 7:
+            return 2, "ramp"
+        return 1, "ramp"             # peak the final week
+    return _heat_fade_tier(-until - 1, entry["fade"], "afterglow")
+
+
+def _heat_slots(entries, total, settings):
+    """Per-entry track ceilings for a `total`-track mix — a max, not a quota.
+
+    `entries` must already be filtered to active (tier 1-3), each carrying its
+    `"tier"` key. Each entry's tier maps to a % share (`settings["tiers"]`,
+    1-indexed); shares are summed and, if the sum exceeds `settings["cap"]`,
+    every share is scaled down proportionally so a hot week can't eat the whole
+    playlist. Floors at 1 for an active entry — 5% of a 15-track mix is one
+    track, not zero — which is the one case that can push the realized total
+    slightly past the cap. Returns a list of ints parallel to `entries`.
+    """
+    if total <= 0 or not entries:
+        return [0] * len(entries)
+    tiers = settings.get("tiers", DEFAULT_HEAT_TIERS)
+    cap = settings.get("cap", DEFAULT_HEAT_CAP)
+    shares = [tiers[e["tier"] - 1] for e in entries]
+    share_sum = sum(shares)
+    scale = (cap / share_sum) if share_sum > cap else 1.0
+    return [max(1, int(share * scale / 100 * total)) for share in shares]
+
+
+def _heat_fits(entry, brief_terms):
+    """True if `entry` fits a brief carrying `brief_terms`.
+
+    An entry with a blank `Fits` column fits anywhere (the common case — most
+    rows leave it blank); otherwise at least one of its comma-separated terms
+    must appear in `brief_terms`. Case-insensitive. Not consumed until briefs
+    exist (a later ticket) — the column and this check just land here first.
+    """
+    fits = entry.get("fits") or []
+    if not fits:
+        return True
+    terms = {t.strip().lower() for t in brief_terms}
+    return any(f.strip().lower() in terms for f in fits)
+
+
+def _heat_norm_genre(s):
+    """Fold a genre string for matching: lowercase, `-`/whitespace collapse to one
+    space. Makes `dance-punk` (a heat row's `What`) equal `dance punk` (a Last.fm tag)."""
+    return re.sub(r"[-\s]+", " ", s.strip().lower()).strip()
+
+
+def _heat_active(entries, today):
+    """Tier/phase every entry as of `today` and keep only the active ones (tier >= 1).
+
+    Returns new dicts (`entries` isn't mutated) carrying `tier`/`phase` alongside
+    the original fields — the shape `_heat_slots`, `_heat_fits` and `_annotate_heat`
+    all expect.
+    """
+    active = []
+    for e in entries:
+        tier, phase = _heat_tier(e, today)
+        if tier:
+            active.append(dict(e, tier=tier, phase=phase))
+    return active
+
+
+def _heat_gate(active, brief_terms):
+    """Split tier-active entries into `(in_scope, skipped)` against `--heat-fits`.
+
+    `brief_terms=None` (flag omitted) means every active entry stays in scope —
+    supply is still the gate. Given terms, `_heat_fits` decides per entry; a row
+    with a blank `Fits` column always passes (fits everywhere).
+    """
+    if brief_terms is None:
+        return list(active), []
+    in_scope, skipped = [], []
+    for e in active:
+        (in_scope if _heat_fits(e, brief_terms) else skipped).append(e)
+    return in_scope, skipped
+
+
+def _annotate_heat(rows, entries, tag_lookup=None):
+    """Annotate `rows` in place with `"heat"` = `{what, kind, tier, phase}` or `None`.
+
+    `entries` must already be tier-active (`_heat_active`) and scope-gated
+    (`_heat_gate`) — this is purely the supply-side match, and it never filters or
+    reorders `rows`. Artist-kind entries (including every Concert row, which has
+    no `Kind` column of its own) match case-insensitive substring against the
+    track's `artist` field, same convention as `find-artists`. Genre-kind entries
+    match the lead artist's Last.fm tags via `tag_lookup(artist) -> [tag names]`,
+    normalized on both sides with `_heat_norm_genre` — `tag_lookup` is only ever
+    called for a genre entry, so an all-artist heat doc stays fully offline.
+
+    When more than one entry matches the same track, the hottest (highest tier)
+    wins; ties keep whichever entry was seen first. Returns a list of match
+    counts parallel to `entries` — the `found` half of the `up to N, found M`
+    stderr footer.
+    """
+    found = [0] * len(entries)
+    for row in rows:
+        artist_field = row.get("artist") or ""
+        lead = artist_field.split(",")[0].strip()
+        best = None
+        for idx, e in enumerate(entries):
+            kind = e.get("kind") or "artist"
+            if kind == "genre":
+                tags = {_heat_norm_genre(t) for t in (tag_lookup(lead) if tag_lookup else [])}
+                hit = _heat_norm_genre(e["name"]) in tags
+            else:
+                hit = e["name"].lower() in artist_field.lower()
+            if not hit:
+                continue
+            found[idx] += 1
+            if best is None or e["tier"] > best["tier"]:
+                best = e
+        row["heat"] = ({"what": best["name"], "kind": best.get("kind") or "artist",
+                         "tier": best["tier"], "phase": best["phase"]}
+                        if best is not None else None)
+    return found
+
+
+def cmd_heat(args):
+    """`heat list` — read profile/heat.md and print each entry's current phase.
+
+    A missing profile/heat.md is not an error (unconfigured clone) — it just
+    says so and exits 0, same as every other skill's no-op-gracefully rule.
+    """
+    if not os.path.exists(HEAT_PATH):
+        print("nothing hot")
+        return
+
+    entries, settings = _parse_heat(HEAT_PATH)
+    today = datetime.now().date()
+    for e in entries:
+        tier, phase = _heat_tier(e, today)
+        e["tier"], e["phase"] = tier, phase
+        e["share"] = settings["tiers"][tier - 1] if tier else 0
+
+    if not entries:
+        print("nothing hot")
+        return
+
+    total_slots = 0
+    if args.for_n:
+        active = [e for e in entries if e["tier"] >= 1]
+        for e, n in zip(active, _heat_slots(active, args.for_n, settings)):
+            e["slot"] = n
+        total_slots = sum(e["slot"] for e in active)
+
+    if args.json:
+        out = []
+        for e in entries:
+            row = dict(e)
+            if e["type"] == "vibing":
+                row["started"] = row["started"].isoformat()
+            else:
+                row["date"] = row["date"].isoformat()
+            if args.for_n:
+                row.setdefault("slot", 0)
+            out.append(row)
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return
+
+    for e in entries:
+        when = f"since {e['started']}" if e["type"] == "vibing" else f"on {e['date']}"
+        slot = f"  slot<={e['slot']}" if "slot" in e else ""
+        fits = f"  [{', '.join(e['fits'])}]" if e["fits"] else ""
+        note = f"  — {e['note']}" if e.get("note") else ""
+        print(f"{e['phase']:>9}  tier{e['tier']}  {e['share']:>2}%  "
+              f"{e['name']} ({when}){slot}{fits}{note}")
+    if args.for_n:
+        print(f"# {total_slots}/{args.for_n} slots claimed by heat (cap {settings['cap']}%)",
+              file=sys.stderr)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Plumbing for the `mix` skill.")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1630,6 +2062,13 @@ def main():
     ro.add_argument("--tags", action="store_true",
                     help="annotate each row with the lead artist's top-5 Last.fm tags "
                          "(needs LASTFM_API_KEY)")
+    ro.add_argument("--heat", action="store_true",
+                    help="annotate each row with profile/heat.md's current heat "
+                         "(vibing artist/genre fades, concert ramp/afterglow); "
+                         "supply-gated by these sources, never filters or reorders")
+    ro.add_argument("--heat-fits", default=None, metavar="TERMS",
+                    help="comma-separated brief vibe words (e.g. 'chill,yoga'); a heat "
+                         "row whose own Fits column doesn't overlap is skipped, with why")
     ro.add_argument("--json", action="store_true")
     ro.set_defaults(func=cmd_roster)
 
@@ -1669,6 +2108,8 @@ def main():
     r.add_argument("--playlist", required=True, help="playlist id, uri, or url to overwrite")
     r.add_argument("--name", help="optionally rename the playlist")
     r.add_argument("--desc", help="optionally reset the description")
+    r.add_argument("--no-prefix", action="store_true",
+                   help=f"with --name, don't prepend the '{MIX_PREFIX}' name tag")
     r.add_argument("--uris-file", help="file of URIs (else read stdin)")
     r.add_argument("--record", action="store_true",
                    help="update the created_playlist row (or insert if missing)")
@@ -1704,6 +2145,13 @@ def main():
                    help="add: explicit never-list (the default when no --months)")
     i.add_argument("--reason", default=None, help="add: why (e.g. 'heard to death')")
     i.set_defaults(func=cmd_ice)
+
+    h = sub.add_parser("heat", help="read profile/heat.md's fade/concert curve (mirror of ice)")
+    h.add_argument("action", choices=["list"])
+    h.add_argument("--for", dest="for_n", type=int, default=0, metavar="N",
+                   help="also compute each active entry's slot ceiling for an N-track mix")
+    h.add_argument("--json", action="store_true")
+    h.set_defaults(func=cmd_heat)
 
     args = ap.parse_args()
     args.func(args)

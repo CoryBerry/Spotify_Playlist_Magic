@@ -163,6 +163,32 @@ Knobs:
   (accents, `(Remastered)`, `- 2019 Remix`, `feat.`, punctuation); unmatched tracks silently get
   no marker, and a stderr line reports how many candidates carried a signal.
 
+- `--heat` — annotate each row with `profile/heat.md`'s current heat: a fading **Vibing**
+  artist/genre, or a **Concert** ramping toward its date and glowing afterward (see
+  `heat list` and `profile.sample/heat.md` for the doc format and curve). Shows as `🔥1`/`🔥2`/
+  `🔥3` (hottest to warmest) in the left gutter beside pop/ice/mine, `·` when nothing matches,
+  and `"heat": {"what", "kind", "tier", "phase"}` or `null` in `--json` — a plain truthiness
+  test on that field is safe (unlike `ice`, which is a display glyph). **Annotation only: it
+  never filters, reorders, or widens the roster.**
+
+  **Supply is the real gate.** Heat only ever matches against the sources you already passed
+  to `roster` — it can't add a source or reach into the catalog — so a yoga brief built from
+  yoga pools scores zero heat no matter how hot dance-punk is elsewhere. `--heat-fits
+  <terms>` (comma-separated brief vibe words — the same vocabulary as `sources`' tags: `chill`,
+  `dance`, `hype`, `yoga`, `folk`) is the second, explicit gate: a heat row whose own `Fits`
+  column doesn't overlap the brief is skipped before it can match anything, reported on
+  stderr by name. Omit `--heat-fits` and every row stays in scope — supply alone gates it.
+
+  Artist rows (and every Concert row, which has no `Kind` of its own) match case-insensitive
+  substring against the track's artist — the `find-artists` convention, which sidesteps
+  Spotify's search choking on names like `!!!`. Genre rows match the lead artist's Last.fm
+  tags (fetched at limit 10, since a genre like `dance-punk` often isn't in an artist's top 5),
+  normalized on both sides so `dance-punk` matches a `dance punk` tag. **A genre row needs
+  `LASTFM_API_KEY`** and hard-fails naming the row if it's missing — same policy as `--tags`;
+  an all-artist heat doc never touches Last.fm at all. The stderr footer reports each active
+  row's ceiling against what was actually found, e.g. `Dance-punk 🔥2 fade up to 6, found 23` —
+  `found` is the honest number, not a shortfall to go fix.
+
 Each row carries its **runtime** (`m:ss`), **release year** (after the album name) and an
 `[E]` marker when explicit; the stderr footer totals the roster's runtime (`runtime 2h57m`).
 `--json` carries the same as `duration_ms` / `year` / `explicit`. **Size a mix off these —
@@ -319,6 +345,8 @@ remove), so saving first costs nothing and gives Cory something real to react to
 - Every mix is auto-prefixed **`[Mix] `** in its name (so generated playlists group
   together in the library — Spotify's API can't file into folders). It's idempotent, so
   you can pass `--name "[Mix] …"` or plain `--name "…"`; opt out with `--no-prefix`.
+  `replace --name` applies the same tag, so renaming an existing mix can't quietly
+  drop it out of the group; `replace` without `--name` leaves the name alone.
 - Playlists are **private** by default. Only pass `--public` if asked.
 - `--record` logs it to `created_playlist` so it shows in the app's Recently Created page.
 - `--cooldown` (with `--record`) writes the tracks to `track_history` so future Block Mix /
