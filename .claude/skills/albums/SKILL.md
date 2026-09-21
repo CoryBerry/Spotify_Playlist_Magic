@@ -28,11 +28,17 @@ Two front ends, one machine:
 | Order | chronological by release | energy arc, de-clumped |
 | Deep cuts | no — everything | yes, popularity is a negative signal |
 | Cooldown | **never** | always (`--fresh` + `--cooldown`) |
+| Name tag | **none** (`--no-prefix`) | `[Mix] ` prefix |
 
 **Never pass `--cooldown` when shipping a pool.** A 170-track discography written to
 `track_history` locks those artists out of real mixes for a week. Pools are reference
 material; they don't consume the cooldown budget. Do pass `--record` so the pool shows
 up in Recently Created.
+
+**Always pass `--no-prefix` when shipping a pool.** `mix_helper` tags everything it
+ships `[Mix] ` so generated mixes group together in the library. A pool is not a mix —
+its name starts with `Albums - `, which is its own grouping — so the tag is wrong on it
+and buries the pool among the generated mixes.
 
 ## The loop
 
@@ -74,7 +80,7 @@ where the bonus material started.
 ### 3. Ship
 
 ```
-PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py create --name "Albums - …" --desc "…" --uris-file pool.txt --record
+PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py create --name "Albums - …" --desc "…" --uris-file pool.txt --record --no-prefix
 ```
 
 ### 4. Extend an existing pool
@@ -84,7 +90,7 @@ chronological slot instead of being tacked on the end. Then `replace` keeps the 
 
 ```
 PYTHONUTF8=1 python .claude/skills/albums/albums_helper.py plan --from new.txt --extend "Albums - Dance-Punk II" --uris pool.txt
-PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py replace --playlist <id> --uris-file pool.txt --record
+PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py replace --playlist <id> --uris-file pool.txt --record --no-prefix
 ```
 
 ## Inclusion rules
