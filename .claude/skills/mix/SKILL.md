@@ -44,10 +44,23 @@ together (`Rising Hall Rivers` = Rising Appalachia/Trevor Hall/Nahko; `Broken Me
 
 Two axes. **Tier** — how much to trust a hit:
 - `selects` — hand-vetted over years. "Stuff Cory loves." Lead "loved" mixes from here.
+- `culled` — an editorial list Cory is pruning **as he listens**: when something comes up
+  that he doesn't want to hear again, he deletes it on the spot. So it's *negative* vetting,
+  and it's **in progress, not complete** — a surviving track is either "cleared" or "not
+  reached yet", and nothing in the data says which. That still beats `feed`, because the
+  deletions are genuinely his taste, so a culled pool is **spine-eligible** where `feed` is
+  seasoning-only. It does not reach `selects`: nothing here was ever *chosen*, only
+  *not-yet-rejected*, and culling removes the hated, never the merely fine. Popularity stays
+  a negative signal inside it and `roster`'s deep-cut band still does the real work.
+  Two pools carry it, both Rolling Stone (`Top 500 Albums (2023) CULLED`, 6946 tracks, and
+  `Top 500 Songs (2021, Culled)`, 500) — they overlap by only 165 tracks, so treat them as
+  complementary rather than one list. **Where a culled copy of a list exists, never source
+  the unculled one.**
 - `drops` — **blind-copied from a trusted source, tracks never audited.** A hit means
   "Cory trusted the source," NOT "Cory loves this." Discovery fuel; seasoning, not spine.
 - `annual` — year pools / album-of-the-year lists. Enjoyed-but-algorithm-heavy.
-- `feed` — external or critic-made lists (Paste, AOTY, Rolling Stone, friends' lists).
+- `feed` — external or critic-made lists (Paste, AOTY, friends' lists), **unpruned**.
+  A critic list Cory has started culling moves up to `culled` above.
 - `notmine` — provenance only: someone else made it. **Neutral weight, not a penalty** —
   several `notmine` pools are top-20 go-tos. It tells you who to credit (see
   [[mix-state-sources]]) and that Cory's own taste didn't filter it, nothing more.
