@@ -35,6 +35,9 @@ PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py sources --search chill
 PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py sources --tag selects
 ```
 
+`sources` hides `nomix` playlists (past outputs, provider stat-mirrors) — `--all` shows
+them, and an explicit `--tag nomix` still works when you want that list on purpose.
+
 Names live in the app's `playlist_cache`; **the DB never stores track contents**, so
 you must pull tracks live (next step). Prefer 3–5 sources that fit the requested vibe.
 **Tags are the highest-signal filter — reach for `--tag` before `--search`,** because
@@ -61,13 +64,28 @@ Two axes. **Tier** — how much to trust a hit:
 - `annual` — year pools / album-of-the-year lists. Enjoyed-but-algorithm-heavy.
 - `feed` — external or critic-made lists (Paste, AOTY, friends' lists), **unpruned**.
   A critic list Cory has started culling moves up to `culled` above.
+- `pool` — Cory's own, **assembled but not vetted**: album pools (`Albums - …`), genre and
+  year dumps, big liked-song archives. His library, his gathering, but nobody went through it
+  track by track — so it sits below `selects` and above `feed`. These are the bulk sources;
+  most are large enough that `roster --sample` is the sane way in.
 - `notmine` — provenance only: someone else made it. **Neutral weight, not a penalty** —
   several `notmine` pools are top-20 go-tos. It tells you who to credit (see
   [[mix-state-sources]]) and that Cory's own taste didn't filter it, nothing more.
+- `nomix` — **not a source. Never build from it.** Two kinds: mixes this skill (or the web
+  app) already shipped, and provider stat-mirrors like Discover Weekly / Your All-Time Top
+  Songs / Last.FM Top Tracks. Sourcing from a past output re-serves the same tracks and
+  launders them into looking twice-picked. The tag exists because "untagged" used to be
+  ambiguous between *not yet tagged* and *not for mixes*; `nomix` says the second out loud.
+  Office mixes keep `office` alongside it so the history stays findable.
 
 **Vibe/kind:** `chill`, `electronic`, `folk`, `instrumental`, `yoga`, `hype` (high energy),
 `decade` (60s–2020s + century pools), `rotation` (the 10/20/30, low signal),
-`current` (`Last 300 Liked` — rolling now-signal), `office`, `kids`.
+`current` (`Last 300 Liked`, Release Radar — rolling now-signal), `office`, `kids`, `gym`.
+
+**Genre:** `jazz`, `punk`, `rock`, `country`, `hiphop`, `indie`, `dance`, `dnb`, `world`.
+Added because the vibe axis couldn't reach the library's thickest shelves — hip-hop used to
+be findable only by recognising `Cory's Hip-Hop Selects` **by name**, which is guessing, not
+retrieval. Genre and vibe are the same axis and compose freely (`pool punk annual`).
 
 `yoga` is a **built brief**, not a genre: barefoot folk + world-acoustic + ambient, landing
 in savasana. Six pools carry it. Trust the tag over the name here — `cathedral drops` and

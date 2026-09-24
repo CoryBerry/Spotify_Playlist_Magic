@@ -940,6 +940,11 @@ def cmd_sources(args):
             continue
         if args.search and args.search.lower() not in p["name"].lower():
             continue
+        # `nomix` marks a past output or a provider stat-mirror — never a source.
+        # Hidden by default so the listing is buildable-from; --all reveals them.
+        # An explicit `--tag nomix` is a deliberate ask, so it wins.
+        if "nomix" in ptags and not args.all and args.tag != "nomix":
+            continue
         uc = usage.get(pid, (0, None))[0]
         rows.append({
             "id": pid,
@@ -2140,6 +2145,8 @@ def main():
     s.add_argument("--tag", help="only playlists carrying this tag")
     s.add_argument("--search", help="only playlists whose name contains this")
     s.add_argument("--json", action="store_true")
+    s.add_argument("--all", action="store_true",
+                   help="include `nomix` playlists (past outputs, provider stat-mirrors)")
     s.set_defaults(func=cmd_sources)
 
     t = sub.add_parser("tracks", help="dump uri/name/artist from sources")
