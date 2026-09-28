@@ -1467,6 +1467,8 @@ def _cached_pool_tracks():
                 blob = json.load(fh)
         except (OSError, ValueError):
             continue
+        if not isinstance(blob, dict):  # stray scratch dumps, not pool blobs
+            continue
         if blob.get("version") != MIX_CACHE_VERSION:
             stale += 1
         for t in blob.get("tracks") or []:
