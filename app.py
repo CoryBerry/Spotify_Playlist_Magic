@@ -2,7 +2,7 @@
 # app.py — Spotify Tools
 # ---------------------------------------------------------------
 
-from flask import Flask, render_template, request, session, redirect, url_for, jsonify, flash
+from flask import Flask, render_template, request, session, redirect, url_for, jsonify, flash, g
 from urllib.parse import urlparse
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timedelta
@@ -26,6 +26,11 @@ load_dotenv()
 # Search/matching helpers now live in spotify_service (shared with the headless CLI) so
 # there is one source of truth. Imported back here for the web routes that use them.
 from spotify_service import _name_sim, _search_line
+
+# Music recall (see recall_service.py) keeps its own sqlite3 connection over the same
+# instance/spotify_tools.db file, independent of the SQLAlchemy models above — the
+# terminal (recall_cli.py) and this web surface share that one implementation.
+import recall_service as rs
 
 
 def _detect_list_type(line_results):
@@ -2075,6 +2080,269 @@ def feed_resolve():
     flash(f"Added {len(uris)} track{'s' if len(uris) != 1 else ''} to "
           f"{playlist_obj['name']}.", "success")
     return redirect(url_for("feed_radar"))
+
+
+# ---------------------------------------------------------------
+# Routes — Recall (dashboard, artist detail, practice card)
+#   /recall over the same recall_service steps as `cli.py recall` (recall_cli.py). A
+#   per-request sqlite3 connection (own tables, not SQLAlchemy) via flask.g. A practice
+#   session's id lives in the Flask session cookie so a reload resumes the same prompt;
+#   the template only ever receives next_prompt()'s public_view, which has no answers.
+# ---------------------------------------------------------------
+
+def _recall_conn():
+    if "recall_conn" not in g:
+        g.recall_conn = rs.connect()
+    return g.recall_conn
+
+
+@app.teardown_appcontext
+def _close_recall_conn(exc):
+    conn = g.pop("recall_conn", None)
+    if conn is not None:
+        conn.close()
+
+
+def _recall_current_prompt(conn):
+    """The open prompt for the session in the cookie, or None. Clears a stale/finished
+    session id so the dashboard falls back to a 'start practice' state."""
+    sid = session.get("recall_session_id")
+    if not sid:
+        return None
+    try:
+        p = rs.next_prompt(conn, sid)
+    except rs.RecallError:
+        p = None
+    if p is None:
+        session.pop("recall_session_id", None)
+    return p
+
+
+@app.route("/recall")
+def recall_dashboard():
+    conn = _recall_conn()
+    return render_template(
+        "recall_dashboard.html",
+        active=rs.list_active(conn),
+        proposals=rs.proposed_links(conn),
+        stats=rs.stats(conn),
+        practice=_recall_current_prompt(conn),
+    )
+
+
+@app.route("/recall/refresh", methods=["POST"])
+def recall_refresh():
+    conn = _recall_conn()
+    try:
+        rep = rs.run_refresh(conn)
+    except Exception as exc:
+        flash(f"Refresh failed: {exc}", "danger")
+        return redirect(url_for("recall_dashboard"))
+    a = rep["active"]
+    flash(f"Refreshed — {a['size']} in the set (added {len(a['added'])}, "
+          f"rotated out {len(a['retired'])}).", "success")
+    return redirect(url_for("recall_dashboard"))
+
+
+@app.route("/recall/note", methods=["POST"])
+def recall_note():
+    conn = _recall_conn()
+    try:
+        rs.add_note(conn, request.form.get("text", ""))
+        flash("Noted.", "success")
+    except rs.RecallError as exc:
+        flash(str(exc), "warning")
+    return redirect(url_for("recall_dashboard"))
+
+
+@app.route("/recall/choice", methods=["POST"])
+def recall_choice():
+    """pin / dismiss / nope / unpin (clear) / snooze — one form, `choice` says which."""
+    conn = _recall_conn()
+    name   = request.form.get("name", "")
+    choice = request.form.get("choice", "")
+    days   = request.form.get("days", type=int)
+    try:
+        if choice == "snooze":
+            rs.set_choice(conn, name, "snooze", snooze_days=days)
+        else:
+            rs.set_choice(conn, name, choice if choice != "clear" else None)
+    except rs.RecallError as exc:
+        flash(str(exc), "danger")
+    return redirect(request.form.get("next") or url_for("recall_dashboard"))
+
+
+@app.route("/recall/link/state", methods=["POST"])
+def recall_link_state():
+    conn = _recall_conn()
+    try:
+        rs.set_link_state_by_id(conn, request.form.get("link_id", type=int),
+                                request.form.get("state", ""))
+    except rs.RecallError as exc:
+        flash(str(exc), "danger")
+    return redirect(url_for("recall_dashboard"))
+
+
+@app.route("/recall/artist/<name>")
+def recall_artist(name):
+    conn = _recall_conn()
+    try:
+        art = rs.artist_detail(conn, name)
+    except rs.RecallError as exc:
+        flash(str(exc), "warning")
+        return redirect(url_for("recall_dashboard"))
+    return render_template("recall_artist.html", art=art)
+
+
+@app.route("/recall/artist/<name>/hook", methods=["POST"])
+def recall_artist_hook(name):
+    conn = _recall_conn()
+    try:
+        rs.set_hook(conn, name, request.form.get("hook", ""))
+    except rs.RecallError as exc:
+        flash(str(exc), "danger")
+    return redirect(url_for("recall_artist", name=name))
+
+
+@app.route("/recall/artist/<name>/link", methods=["POST"])
+def recall_artist_link(name):
+    conn = _recall_conn()
+    dst = request.form.get("dst", "")
+    try:
+        out = rs.link(conn, name, dst, request.form.get("reason", ""))
+        for w in out["warnings"]:
+            flash(w, "info")
+    except rs.RecallError as exc:
+        flash(str(exc), "danger")
+    return redirect(url_for("recall_artist", name=name))
+
+
+@app.route("/recall/artist/<name>/unlink", methods=["POST"])
+def recall_artist_unlink(name):
+    conn = _recall_conn()
+    try:
+        rs.unlink(conn, name, request.form.get("dst", ""))
+    except rs.RecallError as exc:
+        flash(str(exc), "danger")
+    return redirect(url_for("recall_artist", name=name))
+
+
+@app.route("/recall/artist/<name>/context", methods=["POST"])
+def recall_artist_context(name):
+    conn = _recall_conn()
+    try:
+        rs.tag_context(conn, name, request.form.get("context", ""),
+                       remove=bool(request.form.get("remove")))
+    except rs.RecallError as exc:
+        flash(str(exc), "danger")
+    return redirect(url_for("recall_artist", name=name))
+
+
+@app.route("/recall/artist/<name>/alias", methods=["POST"])
+def recall_artist_alias(name):
+    conn = _recall_conn()
+    try:
+        rs.add_alias(conn, request.form.get("alias", ""), name)
+    except rs.RecallError as exc:
+        flash(str(exc), "danger")
+    return redirect(url_for("recall_artist", name=name))
+
+
+# --- Practice card: JSON, driven from recall_dashboard.html's script block ---
+
+@app.route("/recall/practice/start", methods=["POST"])
+def recall_practice_start():
+    conn = _recall_conn()
+    fresh = bool((request.json or {}).get("fresh"))
+    plan = rs.start_session(conn, fresh=fresh)
+    if not plan["session_id"]:
+        return jsonify({"session_id": None, "has_items": plan["has_items"],
+                        "next_due": plan["next_due"]})
+    session["recall_session_id"] = plan["session_id"]
+    return jsonify({"session_id": plan["session_id"], "prompt": rs.next_prompt(conn, plan["session_id"])})
+
+
+@app.route("/recall/practice/hint", methods=["POST"])
+def recall_practice_hint():
+    conn = _recall_conn()
+    try:
+        return jsonify(rs.hint(conn, (request.json or {}).get("attempt_id")))
+    except rs.RecallError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/recall/practice/submit", methods=["POST"])
+def recall_practice_submit():
+    conn = _recall_conn()
+    data = request.json or {}
+    try:
+        return jsonify(rs.submit(conn, data.get("attempt_id"), data.get("answer", "")))
+    except rs.RecallError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/recall/practice/reveal", methods=["POST"])
+def recall_practice_reveal():
+    conn = _recall_conn()
+    try:
+        return jsonify(rs.reveal(conn, (request.json or {}).get("attempt_id")))
+    except rs.RecallError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/recall/practice/rate", methods=["POST"])
+def recall_practice_rate():
+    conn = _recall_conn()
+    data = request.json or {}
+    try:
+        out = rs.rate(conn, data.get("attempt_id"), data.get("rating", ""))
+    except rs.RecallError as exc:
+        return jsonify({"error": str(exc)}), 400
+    sid = session.get("recall_session_id")
+    return jsonify({"rated": out, "next": rs.next_prompt(conn, sid) if sid else None})
+
+
+@app.route("/recall/practice/end", methods=["POST"])
+def recall_practice_end():
+    conn = _recall_conn()
+    sid = session.pop("recall_session_id", None)
+    if not sid:
+        return jsonify({"error": "no active session"}), 400
+    return jsonify(rs.end_session(conn, sid))
+
+
+@app.route("/recall/curate/alias", methods=["POST"])
+def recall_curate_alias():
+    """Practice-card follow-up: remember a spelling as an existing artist."""
+    conn = _recall_conn()
+    data = request.json or {}
+    try:
+        return jsonify(rs.add_alias(conn, data.get("alias", ""), data.get("name", "")))
+    except rs.RecallError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/recall/curate/link", methods=["POST"])
+def recall_curate_link():
+    """Practice-card follow-up: add a new recommendation link that came up."""
+    conn = _recall_conn()
+    data = request.json or {}
+    try:
+        return jsonify(rs.link(conn, data.get("src", ""), data.get("dst", ""),
+                               data.get("reason", "came up in practice")))
+    except rs.RecallError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/recall/curate/link-state", methods=["POST"])
+def recall_curate_link_state():
+    """Practice-card follow-up: accept/reject a suggested neighbor by id."""
+    conn = _recall_conn()
+    data = request.json or {}
+    try:
+        return jsonify(rs.set_link_state_by_id(conn, data.get("link_id"), data.get("state", "")))
+    except rs.RecallError as exc:
+        return jsonify({"error": str(exc)}), 400
 
 
 # ---------------------------------------------------------------
