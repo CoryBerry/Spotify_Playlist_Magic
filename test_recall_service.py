@@ -211,7 +211,194 @@ def test_pins_survive_rotation_and_others_rotate_out(conn):
     assert rep["active"]["retired"], "aged, unpinned members should rotate"
 
 
+# ----------------------------------------------------------------- starter set
+
+def test_starter_links_are_offered_not_assumed(conn):
+    assert rs.seed_starter(conn, T0) == 2
+    assert rs.seed_starter(conn, T0) == 0                    # once only
+    prop = rs.proposed_links(conn)
+    assert {(p["src"], p["dst"]) for p in prop} == {("Remember Sports", "Lime Garden"),
+                                                    ("Remember Sports", "Hop Along")}
+    ev = conn.execute("SELECT evidence, bucket FROM recall_artist WHERE name='Lime Garden'").fetchone()
+    assert ev["evidence"] is None and ev["bucket"] is None   # no fabricated play history
+    assert rs.start_session(conn, T0)["session_id"] is None  # nothing practiceable until accepted
+    rs.set_link_state(conn, "Remember Sports", "Lime Garden", "rejected", T0)
+    rs.seed_starter(conn, T0)
+    assert conn.execute("SELECT state FROM recall_link WHERE id=1").fetchone()[0] == "rejected"
+
+
+# ----------------------------------------------------------------- practice
+
+def _curate(conn):
+    rs.seed_starter(conn, T0)
+    rs.set_link_state(conn, "Remember Sports", "Lime Garden", "accepted", T0)
+    rs.set_link_state(conn, "Remember Sports", "Hop Along", "accepted", T0)
+    rs.set_hook(conn, "Lime Garden", "a newer discovery I want to bring up", T0)
+
+
+def _first_recommend(conn, now):
+    s = rs.start_session(conn, now)
+    p = rs.next_prompt(conn, s["session_id"], now)
+    assert p["kind"] == "recommend"
+    return s["session_id"], p
+
+
+def test_prompt_view_and_hints_never_leak_answers(conn):
+    _curate(conn)
+    sid, p = _first_recommend(conn, T0)
+    blob = json.dumps(p).lower()
+    assert "remember sports" in blob
+    assert "lime garden" not in blob and "hop along" not in blob
+    h1 = rs.hint(conn, p["attempt_id"])
+    assert h1["hint_level"] == 1 and "lime garden" not in h1["hint"].lower()
+    assert "newer discovery" in h1["hint"]
+    h2 = rs.hint(conn, p["attempt_id"])
+    assert h2["hint_level"] == 2 and h2["hint"] == "Starts with: L…, H…"
+
+
+def test_hint_skips_playlist_names_that_spell_the_answer(conn):
+    rs.link(conn, "Remember Sports", "Hop Along", now=T0)
+    conn.execute("UPDATE recall_artist SET evidence=? WHERE name='Hop Along'",
+                 (json.dumps({"playlists": ["Albums - Hop Along", "Indie SELECTS"]}),))
+    sid, p = _first_recommend(conn, T0)
+    assert rs.hint(conn, p["attempt_id"])["hint"] == "One of them is in your playlist “Indie SELECTS”"
+
+
+def test_submit_resolves_alternatives_spelling_and_unknowns(conn):
+    _curate(conn)
+    rs.ensure_artist(conn, "Wednesday", "user", T0)
+    sid, p = _first_recommend(conn, T0)
+    fb = rs.submit(conn, p["attempt_id"], "lime gardn, Wednesday, Totally New Band", T0 + timedelta(seconds=40))
+    by = {r["text"]: r for r in fb["resolved"]}
+    assert by["lime gardn"]["how"] == "spelling" and by["lime gardn"]["expected"]
+    assert by["Wednesday"]["how"] == "exact" and not by["Wednesday"]["expected"]   # valid alt, not "wrong"
+    assert by["Totally New Band"]["how"] == "unknown"
+    assert [e["hit"] for e in fb["expected"]] == [True, False]
+    assert fb["sentence"] == "You like Remember Sports? Have you heard Lime Garden or Hop Along?"
+    # Cory endorses his alternative → it becomes an accepted answer next time
+    rs.link(conn, "Remember Sports", "Wednesday", "came to mind in practice", T0)
+    _, expected = rs._build_prompt(conn, conn.execute("SELECT * FROM recall_item WHERE kind='recommend'").fetchone(), T0)
+    assert "Wednesday" in {e["name"] for e in expected}
+
+
+def test_schedule_ladder_hints_and_misses():
+    ladder = [3, 7, 14, 30]
+    item = {"step": 0, "lapses": 0}
+    s = rs.schedule(item, "easy", 0, False, ladder, 1, T0)
+    assert (s["interval_days"], s["step"]) == (3, 1)
+    s2 = rs.schedule({"step": 1, "lapses": 0}, "easy", 0, False, ladder, 1, T0)
+    assert s2["interval_days"] == 7
+    assert rs.schedule({"step": 1, "lapses": 0}, "moment", 0, False, ladder, 1, T0)["step"] == 1
+    hinted = rs.schedule({"step": 2, "lapses": 0}, "easy", 1, False, ladder, 1, T0)
+    assert hinted["interval_days"] == 7 and hinted["step"] == 2          # shorter, no promotion
+    miss = rs.schedule({"step": 3, "lapses": 0}, "couldnt", 0, False, ladder, 1, T0)
+    assert (miss["interval_days"], miss["step"], miss["lapses"]) == (1, 0, 1)
+    early = rs.schedule({"step": 3, "lapses": 0}, "easy", 0, True, ladder, 1, T0)
+    assert early["interval_days"] == 1                                   # revealed before answering
+    top = rs.schedule({"step": 3, "lapses": 0}, "easy", 0, False, ladder, 1, T0)
+    assert (top["interval_days"], top["step"]) == (30, 3)
+
+
+def test_rating_requires_an_attempt_and_happens_once(conn):
+    _curate(conn)
+    sid, p = _first_recommend(conn, T0)
+    with pytest.raises(rs.RecallError, match="before rating"):
+        rs.rate(conn, p["attempt_id"], "easy", T0)
+    rs.submit(conn, p["attempt_id"], "Lime Garden", T0)
+    rs.rate(conn, p["attempt_id"], "easy", T0)
+    with pytest.raises(rs.RecallError, match="already rated"):
+        rs.rate(conn, p["attempt_id"], "easy", T0)
+    with pytest.raises(rs.RecallError):
+        rs.rate(conn, p["attempt_id"], "great", T0)
+
+
+def test_interrupted_session_keeps_work_and_resumes(conn):
+    _curate(conn)
+    rs.tag_context(conn, "Lime Garden", "new discoveries", now=T0)
+    s = rs.start_session(conn, T0)
+    assert len(s["queue"]) == 1                    # new_per_session=1: new material in small doses
+    p = rs.next_prompt(conn, s["session_id"], T0)
+    rs.submit(conn, p["attempt_id"], "Hop Along", T0)
+    # walk away before rating — the answer is saved, the schedule isn't touched
+    again = rs.next_prompt(conn, s["session_id"], T0 + timedelta(minutes=5))
+    assert again["attempt_id"] == p["attempt_id"] and again["answered"]
+    recap = rs.end_session(conn, s["session_id"], T0 + timedelta(minutes=6))
+    assert recap["prompts"] == 1 and recap["rated"] == 0
+    item = conn.execute("SELECT due_at, reps FROM recall_item WHERE kind='recommend'").fetchone()
+    assert item["due_at"] is None and item["reps"] == 0
+    assert rs.next_prompt(conn, s["session_id"], T0) is None           # ended
+    s2 = rs.start_session(conn, T0 + timedelta(minutes=10))
+    assert s2["session_id"] and s2["queue"]                            # still practiceable
+
+
+def test_nothing_due_offers_fresh(conn):
+    _curate(conn)
+    sid, p = _first_recommend(conn, T0)
+    rs.submit(conn, p["attempt_id"], "Lime Garden, Hop Along", T0)
+    rs.rate(conn, p["attempt_id"], "easy", T0)
+    conn.execute("UPDATE recall_item SET due_at=? WHERE due_at IS NULL", (rs._ts(T0 + timedelta(days=5)),))
+    conn.commit()
+    plan = rs.start_session(conn, T0 + timedelta(hours=1))
+    assert plan["session_id"] is None and plan["nothing_due"] and plan["next_due"]
+    fresh = rs.start_session(conn, T0 + timedelta(hours=1), fresh=True)
+    assert fresh["session_id"] and fresh["queue"]
+
+
+def test_all_snoozed_hides_hook_prompts(conn):
+    rs.set_hook(conn, "Lime Garden", "the one with the drum machine", T0)
+    rs.set_choice(conn, "Lime Garden", "snooze", T0, snooze_days=7)
+    assert rs.start_session(conn, T0)["session_id"] is None
+    assert rs.start_session(conn, T0 + timedelta(days=8))["session_id"]
+
+
+def test_hook_that_names_the_artist_is_not_a_prompt(conn):
+    out = rs.set_hook(conn, "Hop Along", "Hop Along's singer screams beautifully", T0)
+    assert out["leaks_name"]
+    rs.sync_items(conn, T0)
+    assert not conn.execute("SELECT 1 FROM recall_item WHERE kind='hook' AND live=1").fetchone()
+
+
 # ----------------------------------------------------------------- the whole loop
+
+def test_curate_practice_persist_reschedule_loop(conn):
+    _set_size(conn, 4)
+    rs.refresh(conn, _listening(), _playlists(), T0)
+    rs.set_link_state(conn, "Remember Sports", "Lime Garden", "accepted", T0)
+    rs.link(conn, "Remember Sports", "Hop Along", "wanted to mention them at the brewery", T0)
+
+    # Day 0: recommend prompt is new → practiced, easy, unassisted → due in 3 days
+    s = rs.start_session(conn, T0)
+    p = rs.next_prompt(conn, s["session_id"], T0)
+    assert p["prompt"] == "Someone says they like Remember Sports. Name two artists you'd recommend."
+    fb = rs.submit(conn, p["attempt_id"], "Lime Garden and Hop Along", T0 + timedelta(seconds=20))
+    assert all(e["hit"] for e in fb["expected"])
+    r = rs.rate(conn, p["attempt_id"], "easy", T0 + timedelta(seconds=25))
+    assert r["interval_days"] == 3
+    recap = rs.end_session(conn, s["session_id"], T0 + timedelta(minutes=1))
+    assert recap["recalled"] == ["Lime Garden", "Hop Along"]
+    assert recap["sentence"].startswith("You like Remember Sports?")
+
+    # Day 1: recommend isn't due; the new 'lately' item is offered instead
+    d1 = T0 + timedelta(days=1)
+    s1 = rs.start_session(conn, d1)
+    kinds = [conn.execute("SELECT kind FROM recall_item WHERE id=?", (i,)).fetchone()[0] for i in s1["queue"]]
+    assert "recommend" not in kinds and "lately" in kinds
+    p1 = rs.next_prompt(conn, s1["session_id"], d1)
+    rs.reveal(conn, p1["attempt_id"], d1)                     # blanked — reveal first
+    rs.rate(conn, p1["attempt_id"], "couldnt", d1)
+    rs.end_session(conn, s1["session_id"], d1)
+
+    # Day 3: both are due — the missed one (due day 2) comes first
+    d3 = T0 + timedelta(days=3, hours=1)
+    s3 = rs.start_session(conn, d3)
+    kinds = [conn.execute("SELECT kind FROM recall_item WHERE id=?", (i,)).fetchone()[0] for i in s3["queue"]]
+    assert kinds == ["lately", "recommend"]
+
+    st = rs.stats(conn, d3)
+    assert dict(st["unassisted_recalls"]) == {"Lime Garden": 1, "Hop Along": 1}
+    assert st["difficult"] and st["difficult"][0]["prompt"].startswith("Name three artists")
+    assert st["due_now"] == 2 and st["recommendations"] == 2
+
 
 def test_settings_are_bounded(conn):
     assert rs.set_setting(conn, "set_size", "20") == 20
