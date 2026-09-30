@@ -1110,3 +1110,397 @@ def proposed_links(conn, limit: int = 50) -> list[dict]:
              "reason": r["reason"], "confidence": r["confidence"]} for r in rows]
 
 
+# ---------------------------------------------------------------------------
+# Practice items
+# ---------------------------------------------------------------------------
+
+def sync_items(conn, now: Optional[datetime] = None) -> None:
+    """Make sure every practiceable relationship has an item; mark the rest not live.
+
+    Schedules the *cue → recommendation* relationship (one item per cue with accepted links),
+    not each artist in isolation — naming Lime Garden from a hook and naming her when
+    Remember Sports comes up are different practice tasks.
+    """
+    now = _now(now)
+    wanted: dict[str, dict] = {}
+    for r in conn.execute("SELECT DISTINCT src_id FROM recall_link WHERE state='accepted'"):
+        wanted[f"recommend:{r[0]}"] = {"kind": "recommend", "cue_id": r[0]}
+    for r in conn.execute("SELECT id, name, hook FROM recall_artist WHERE hook IS NOT NULL"
+                          " AND (choice IS NULL OR choice='pinned')"):
+        if not _leaks(r["hook"], [r["name"]]):
+            wanted[f"hook:{r['id']}"] = {"kind": "hook", "target_id": r["id"]}
+    for r in conn.execute("SELECT DISTINCT context FROM recall_context"):
+        wanted[f"context:{r[0]}"] = {"kind": "context", "context": r[0]}
+    n_active = conn.execute("SELECT COUNT(*) FROM recall_active WHERE retired_at IS NULL").fetchone()[0]
+    if n_active >= 3:
+        wanted["lately"] = {"kind": "lately"}
+
+    existing = {r["key"]: r for r in conn.execute("SELECT id, key, live FROM recall_item")}
+    for key, spec in wanted.items():
+        if key in existing:
+            if not existing[key]["live"]:
+                conn.execute("UPDATE recall_item SET live=1 WHERE id=?", (existing[key]["id"],))
+        else:
+            conn.execute("INSERT INTO recall_item (kind, key, cue_id, target_id, context, created_at)"
+                         " VALUES (?,?,?,?,?,?)", (spec["kind"], key, spec.get("cue_id"),
+                                                    spec.get("target_id"), spec.get("context"), _ts(now)))
+    for key, r in existing.items():
+        if key not in wanted and r["live"]:
+            conn.execute("UPDATE recall_item SET live=0 WHERE id=?", (r["id"],))
+    conn.commit()
+
+
+def _build_prompt(conn, item, now: datetime) -> tuple[str, list[dict]]:
+    """(prompt text, expected answers). Expected never goes into the public view."""
+    kind = item["kind"]
+
+    def entry(r, reason):
+        ev = json.loads(r["evidence"] or "{}")
+        return {"id": r["id"], "name": r["name"], "reason": reason, "hook": r["hook"],
+                "hook_suggested": r["hook_suggested"], "playlists": ev.get("playlists") or []}
+
+    if kind == "recommend":
+        cue = conn.execute("SELECT name FROM recall_artist WHERE id=?", (item["cue_id"],)).fetchone()
+        rows = conn.execute("SELECT a.*, l.reason AS lreason, l.origin AS lorigin FROM recall_link l"
+                            " JOIN recall_artist a ON a.id=l.dst_id WHERE l.src_id=? AND l.state='accepted'",
+                            (item["cue_id"],)).fetchall()
+        expected = [entry(r, r["lreason"] or f"your {r['lorigin']} link") for r in rows]
+        k = "two artists" if len(expected) >= 2 else "an artist"
+        return f"Someone says they like {cue['name']}. Name {k} you'd recommend.", expected
+    if kind == "lately":
+        rows = conn.execute("SELECT a.*, m.reason AS why FROM recall_active m JOIN recall_artist a"
+                            " ON a.id=m.artist_id WHERE m.retired_at IS NULL").fetchall()
+        rows = [r for r in rows if _eligible_now(r, now)]
+        recent = [r for r in rows if r["bucket"] == "recent"] or rows
+        return ("Name three artists you've been excited about lately.",
+                [entry(r, r["why"]) for r in sorted(recent, key=lambda r: -(r["score"] or 0))])
+    if kind == "context":
+        rows = conn.execute("SELECT a.* FROM recall_context c JOIN recall_artist a ON a.id=c.artist_id"
+                            " WHERE c.context=?", (item["context"],)).fetchall()
+        return (f"You're talking with someone about {item['context']}. Which band would you bring up,"
+                f" and what would you say about it?",
+                [entry(r, f"you filed them under “{item['context']}”") for r in rows])
+    r = conn.execute("SELECT * FROM recall_artist WHERE id=?", (item["target_id"],)).fetchone()
+    return f"What artist belongs with this hook? “{r['hook']}”", [entry(r, "your hook")]
+
+
+def _item_ok(conn, item, now: datetime) -> bool:
+    if item["kind"] == "hook":
+        r = conn.execute("SELECT * FROM recall_artist WHERE id=?", (item["target_id"],)).fetchone()
+        return r is not None and _eligible_now(r, now)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Sessions
+# ---------------------------------------------------------------------------
+
+def plan_session(conn, now: Optional[datetime] = None, prompts: Optional[int] = None,
+                 fresh: bool = False) -> dict:
+    """Pick up to N items: due first (oldest due), plus a little new material.
+
+    Capped on purpose — an overdue pile stays a pile, it never becomes a longer session.
+    At most one hook prompt per session (they're the most trivia-like). ``fresh`` = nothing
+    due, practice anyway: take the soonest-due items early.
+    """
+    now = _now(now)
+    sync_items(conn, now)
+    n = max(1, min(prompts or get_setting(conn, "session_prompts"), 5))
+    new_cap = get_setting(conn, "new_per_session")
+    items = [i for i in conn.execute("SELECT * FROM recall_item WHERE live=1").fetchall() if _item_ok(conn, i, now)]
+    due = sorted((i for i in items if i["due_at"] and _dt(i["due_at"]) <= now), key=lambda i: i["due_at"])
+    order = {"recommend": 0, "context": 1, "lately": 2, "hook": 3}
+    new = sorted((i for i in items if not i["due_at"]), key=lambda i: (order[i["kind"]], i["id"]))
+
+    queue, hooks = [], 0
+
+    def take(i):
+        nonlocal hooks
+        if i["kind"] == "hook":
+            if hooks:
+                return
+            hooks += 1
+        queue.append(i["id"])
+
+    new_take = new[:new_cap]
+    for i in due:
+        if len(queue) >= n - (1 if new_take else 0):
+            break
+        take(i)
+    for i in new_take:
+        if len(queue) < n:
+            take(i)
+    if not queue and fresh:
+        later = sorted((i for i in items if i["due_at"]), key=lambda i: i["due_at"])
+        for i in later:
+            if len(queue) >= n:
+                break
+            take(i)
+    nxt = min((i["due_at"] for i in items if i["due_at"] and _dt(i["due_at"]) > now), default=None)
+    return {"queue": queue, "nothing_due": not queue, "next_due": nxt, "has_items": bool(items)}
+
+
+def start_session(conn, now: Optional[datetime] = None, prompts: Optional[int] = None,
+                  fresh: bool = False) -> dict:
+    """Plan and persist a session. Returns {"session_id": None, ...} when there's nothing to do."""
+    now = _now(now)
+    plan = plan_session(conn, now, prompts, fresh)
+    if not plan["queue"]:
+        plan["session_id"] = None
+        return plan
+    cur = conn.execute("INSERT INTO recall_session (started_at, queue, fresh) VALUES (?,?,?)",
+                       (_ts(now), json.dumps(plan["queue"]), int(fresh)))
+    conn.commit()
+    plan["session_id"] = cur.lastrowid
+    return plan
+
+
+def _attempt(conn, attempt_id: int):
+    a = conn.execute("SELECT * FROM recall_attempt WHERE id=?", (attempt_id,)).fetchone()
+    if not a:
+        raise RecallError("no such attempt")
+    return a
+
+
+def public_view(conn, a) -> dict:
+    """What the prompt screen may show. Deliberately contains NO expected names."""
+    s = conn.execute("SELECT queue FROM recall_session WHERE id=?", (a["session_id"],)).fetchone()
+    queue = json.loads(s["queue"])
+    pos = conn.execute("SELECT COUNT(*) FROM recall_attempt WHERE session_id=? AND id<=?",
+                       (a["session_id"], a["id"])).fetchone()[0]
+    return {"attempt_id": a["id"], "session_id": a["session_id"], "kind": a["kind"], "prompt": a["prompt"],
+            "position": pos, "total": len(queue), "hint_level": a["hint_level"],
+            "answered": a["answered_at"] is not None or bool(a["revealed"]), "rated": a["rating"] is not None}
+
+
+def next_prompt(conn, session_id: int, now: Optional[datetime] = None) -> Optional[dict]:
+    """The open attempt, or a new one for the next queued item, or None when done/ended."""
+    now = _now(now)
+    s = conn.execute("SELECT * FROM recall_session WHERE id=?", (session_id,)).fetchone()
+    if not s:
+        raise RecallError("no such session")
+    if s["ended_at"]:
+        return None
+    open_a = conn.execute("SELECT * FROM recall_attempt WHERE session_id=? AND rating IS NULL"
+                          " ORDER BY id LIMIT 1", (session_id,)).fetchone()
+    if open_a:
+        return public_view(conn, open_a)
+    done = {r[0] for r in conn.execute("SELECT item_id FROM recall_attempt WHERE session_id=?", (session_id,))}
+    for item_id in json.loads(s["queue"]):
+        if item_id in done:
+            continue
+        item = conn.execute("SELECT * FROM recall_item WHERE id=?", (item_id,)).fetchone()
+        if not item or not item["live"]:
+            continue
+        prompt, expected = _build_prompt(conn, item, now)
+        if not expected:
+            continue
+        cur = conn.execute("INSERT INTO recall_attempt (session_id, item_id, kind, prompt, expected, shown_at)"
+                           " VALUES (?,?,?,?,?,?)", (session_id, item_id, item["kind"], prompt,
+                                                     json.dumps(expected, ensure_ascii=False), _ts(now)))
+        conn.commit()
+        return public_view(conn, _attempt(conn, cur.lastrowid))
+    return None
+
+
+def hint(conn, attempt_id: int) -> dict:
+    """Graduated hint. Level 1: a hook or playlist context for an expected answer not yet
+    named (skipping any text that would spell the name). Level 2: first letters."""
+    a = _attempt(conn, attempt_id)
+    if a["rating"] or a["answered_at"] or a["revealed"]:
+        raise RecallError("hints are for before you answer")
+    expected = json.loads(a["expected"])
+    names = [e["name"] for e in expected]
+    level = a["hint_level"] + 1
+    text = None
+    if level == 1:
+        for e in expected[:3]:
+            if e.get("hook") and not _leaks(e["hook"], names) and a["kind"] != "hook":
+                text = f"Your hook: “{e['hook']}”"
+                break
+            safe = [p for p in e.get("playlists") or [] if not _leaks(p, names)]
+            if safe:
+                text = f"One of them is in your playlist “{safe[0]}”"
+                break
+            if e.get("hook_suggested") and not _leaks(e["hook_suggested"], names):
+                text = f"From your listening — {e['hook_suggested']}"
+                break
+        if text is None:
+            level = 2
+    if level >= 2:
+        level = 2
+        letters = [e["name"][0].upper() + "…" for e in expected[:3]]
+        text = "Starts with: " + ", ".join(letters)
+    conn.execute("UPDATE recall_attempt SET hint_level=? WHERE id=?", (level, attempt_id))
+    conn.commit()
+    return {"hint_level": level, "hint": text}
+
+
+def _feedback(conn, a) -> dict:
+    """The reveal: expected answers (with reasons), how each answer resolved, other
+    neighbors as examples (not an answer key), and a ready-to-say sentence."""
+    expected = json.loads(a["expected"])
+    resolved = json.loads(a["resolved"] or "[]")
+    exp_ids = {e["id"] for e in expected}
+    hit_ids = {r["artist_id"] for r in resolved if r["artist_id"] in exp_ids}
+    active_ids = {r[0] for r in conn.execute("SELECT artist_id FROM recall_active WHERE retired_at IS NULL")}
+    for r in resolved:
+        r["expected"] = r["artist_id"] in exp_ids
+        r["in_active_set"] = r["artist_id"] in active_ids
+    others = []
+    item = conn.execute("SELECT * FROM recall_item WHERE id=?", (a["item_id"],)).fetchone()
+    cue = None
+    if item and item["kind"] == "recommend":
+        cue = conn.execute("SELECT id, name FROM recall_artist WHERE id=?", (item["cue_id"],)).fetchone()
+        others = [n for n in _neighbors(conn, item["cue_id"], limit=6) if n["state"] == "proposed"]
+    sentence = None
+    if cue and expected:
+        picks = [e["name"] for e in expected if e["id"] in hit_ids] + \
+                [e["name"] for e in expected if e["id"] not in hit_ids]
+        sentence = f"You like {cue['name']}? Have you heard {' or '.join(picks[:2])}?"
+    elif expected and a["kind"] in ("lately", "context"):
+        picks = [r["name"] for r in resolved if r["artist_id"]] or [e["name"] for e in expected]
+        sentence = f"Lately I've been into {', '.join(picks[:3])}."
+    return {"attempt_id": a["id"], "prompt": a["prompt"], "kind": a["kind"], "answer": a["answer"],
+            "cue": cue["name"] if cue else None, "cue_id": cue["id"] if cue else None,
+            "expected": [dict(e, hit=e["id"] in hit_ids) for e in expected],
+            "resolved": resolved, "suggestions": others, "sentence": sentence,
+            "hint_level": a["hint_level"], "revealed_early": bool(a["revealed"])}
+
+
+def submit(conn, attempt_id: int, text: str, now: Optional[datetime] = None) -> dict:
+    """Record a free-text answer (empty = skip) and return the reveal."""
+    now = _now(now)
+    a = _attempt(conn, attempt_id)
+    if a["rating"]:
+        raise RecallError("this prompt is already rated")
+    if a["answered_at"]:
+        return _feedback(conn, a)
+    expected = json.loads(a["expected"])
+    resolved = resolve_answer(conn, text or "", tuple(e["id"] for e in expected))
+    elapsed = (now - _dt(a["shown_at"])).total_seconds()
+    conn.execute("UPDATE recall_attempt SET answer=?, resolved=?, answered_at=?, elapsed_s=? WHERE id=?",
+                 ((text or "").strip(), json.dumps(resolved, ensure_ascii=False), _ts(now),
+                  round(elapsed, 1), attempt_id))
+    conn.commit()
+    return _feedback(conn, _attempt(conn, attempt_id))
+
+
+def reveal(conn, attempt_id: int, now: Optional[datetime] = None) -> dict:
+    """Show the answers. Before any answer, that counts as a reveal (scheduled as a miss)."""
+    a = _attempt(conn, attempt_id)
+    if not a["answered_at"] and not a["revealed"]:
+        conn.execute("UPDATE recall_attempt SET revealed=1, answered_at=?, answer='', resolved='[]' WHERE id=?",
+                     (_ts(_now(now)), attempt_id))
+        conn.commit()
+        a = _attempt(conn, attempt_id)
+    return _feedback(conn, a)
+
+
+def schedule(item, rating: str, hint_level: int, revealed_early: bool, ladder: list[int],
+             relearn_days: int, now: datetime) -> dict:
+    """The review rule — plain and predictable, not a claim of optimality.
+
+    couldn't / revealed early → back in ``relearn_days``, ladder resets.
+    hinted success           → half the current step, no promotion.
+    'took a moment'          → the current step again.
+    'came easily', no help   → the current step, then promote (3 → 7 → 14 → 30 → 30).
+    """
+    step = item["step"] or 0
+    step = min(step, len(ladder) - 1)
+    lapses = item["lapses"] or 0
+    if rating == "couldnt" or revealed_early:
+        interval, step, lapses = float(relearn_days), 0, lapses + 1
+    elif hint_level > 0:
+        interval = max(float(relearn_days), ladder[step] / 2)
+    elif rating == "moment":
+        interval = float(ladder[step])
+    else:
+        interval = float(ladder[step])
+        step = min(step + 1, len(ladder) - 1)
+    return {"step": step, "interval_days": interval, "lapses": lapses,
+            "due_at": _ts(now + timedelta(days=interval))}
+
+
+def rate(conn, attempt_id: int, rating: str, now: Optional[datetime] = None) -> dict:
+    now = _now(now)
+    if rating not in RATINGS:
+        raise RecallError(f"rating must be one of {', '.join(RATINGS)}")
+    a = _attempt(conn, attempt_id)
+    if a["rating"]:
+        raise RecallError("already rated")
+    if not a["answered_at"]:
+        raise RecallError("answer, skip, or reveal before rating")
+    item = conn.execute("SELECT * FROM recall_item WHERE id=?", (a["item_id"],)).fetchone()
+    s = schedule(item, rating, a["hint_level"], bool(a["revealed"]), get_setting(conn, "ladder"),
+                 get_setting(conn, "relearn_days"), now)
+    conn.execute("UPDATE recall_item SET step=?, interval_days=?, lapses=?, due_at=?, reps=reps+1,"
+                 " last_rating=?, last_seen_at=? WHERE id=?",
+                 (s["step"], s["interval_days"], s["lapses"], s["due_at"], rating, _ts(now), item["id"]))
+    conn.execute("UPDATE recall_attempt SET rating=?, rated_at=? WHERE id=?", (rating, _ts(now), attempt_id))
+    conn.commit()
+    return {"rating": rating, "next_due": s["due_at"], "interval_days": s["interval_days"]}
+
+
+def end_session(conn, session_id: int, now: Optional[datetime] = None) -> dict:
+    """Close the session (safe mid-way: rated attempts are kept, unrated ones leave their
+    item's schedule untouched) and return a compact recap."""
+    now = _now(now)
+    s = conn.execute("SELECT * FROM recall_session WHERE id=?", (session_id,)).fetchone()
+    if not s:
+        raise RecallError("no such session")
+    if not s["ended_at"]:
+        conn.execute("UPDATE recall_session SET ended_at=? WHERE id=?", (_ts(now), session_id))
+        conn.commit()
+    attempts = conn.execute("SELECT * FROM recall_attempt WHERE session_id=? ORDER BY id", (session_id,)).fetchall()
+    recalled, revisit, sentence = [], [], None
+    for a in attempts:
+        fb = _feedback(conn, a)
+        if not a["revealed"]:
+            for r in fb["resolved"]:
+                if r["name"] and r["name"] not in recalled and (r["expected"] or r["in_active_set"]):
+                    recalled.append(r["name"])
+        if a["rating"] == "couldnt" or a["revealed"] or a["hint_level"]:
+            label = (f"{fb['cue']} → " if fb["cue"] else "") + ", ".join(e["name"] for e in fb["expected"][:3])
+            revisit.append(label)
+        if sentence is None and fb["sentence"] and fb["cue"]:
+            sentence = fb["sentence"]
+    return {"session_id": session_id, "prompts": len(attempts),
+            "rated": sum(1 for a in attempts if a["rating"]),
+            "recalled": recalled, "revisit": revisit[:2], "sentence": sentence}
+
+
+# ---------------------------------------------------------------------------
+# Stats — modest by design: no scores, no streaks
+# ---------------------------------------------------------------------------
+
+def stats(conn, now: Optional[datetime] = None, days: int = 14) -> dict:
+    now = _now(now)
+    since = _ts(now - timedelta(days=days))
+    unassisted: dict[str, int] = {}
+    for a in conn.execute("SELECT * FROM recall_attempt WHERE rated_at >= ? AND rating IN ('easy','moment')"
+                          " AND hint_level=0 AND revealed=0", (since,)):
+        exp_ids = {e["id"] for e in json.loads(a["expected"])}
+        for r in json.loads(a["resolved"] or "[]"):
+            if r.get("artist_id") in exp_ids:
+                unassisted[r["name"]] = unassisted.get(r["name"], 0) + 1
+    difficult = []
+    for i in conn.execute("SELECT * FROM recall_item WHERE live=1 AND (last_rating='couldnt' OR lapses>=2)"
+                          " ORDER BY lapses DESC, last_seen_at DESC LIMIT 5"):
+        last = conn.execute("SELECT prompt FROM recall_attempt WHERE item_id=? ORDER BY id DESC LIMIT 1",
+                            (i["id"],)).fetchone()
+        difficult.append({"prompt": last["prompt"] if last else i["key"], "lapses": i["lapses"],
+                          "next_due": i["due_at"]})
+    items = conn.execute("SELECT due_at FROM recall_item WHERE live=1").fetchall()
+    return {
+        "window_days": days,
+        "unassisted_recalls": sorted(unassisted.items(), key=lambda kv: -kv[1]),
+        "difficult": difficult,
+        "active_set": conn.execute("SELECT COUNT(*) FROM recall_active WHERE retired_at IS NULL").fetchone()[0],
+        "recommendations": conn.execute("SELECT COUNT(*) FROM recall_link WHERE state='accepted'").fetchone()[0],
+        "proposed": conn.execute("SELECT COUNT(*) FROM recall_link WHERE state='proposed'").fetchone()[0],
+        "due_now": sum(1 for i in items if i["due_at"] and _dt(i["due_at"]) <= now),
+        "new_items": sum(1 for i in items if not i["due_at"]),
+        "notes": [dict(r) for r in conn.execute("SELECT text, created_at FROM recall_note"
+                                                " ORDER BY id DESC LIMIT 5")],
+    }
