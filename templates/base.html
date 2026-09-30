@@ -21,6 +21,7 @@
         <a class="nav-link {% if path in ['/spotify', '/spotify/playlists', '/spotify/build'] %}active{% endif %}" href="/spotify">Block Mix</a>
         <a class="nav-link {% if path == '/spotify/manage' %}active{% endif %}" href="/spotify/manage">Manage</a>
         <a class="nav-link {% if path.startswith('/spotify/ice') %}active{% endif %}" href="/spotify/ice-box">&#129482; Ice Box</a>
+        <a class="nav-link {% if path.startswith('/recall') %}active{% endif %}" href="/recall">&#129504; Recall</a>
         <div class="nav-item dropdown">
           <a class="nav-link dropdown-toggle {% if in_tools %}active{% endif %}" href="#" role="button"
              data-bs-toggle="dropdown" aria-expanded="false">+ Tools</a>
