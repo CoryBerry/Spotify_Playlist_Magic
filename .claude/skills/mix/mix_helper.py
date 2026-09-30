@@ -9,7 +9,8 @@ dance by hand:
     sources   list candidate playlists (name, id, track_count, tags, use_count)
     tracks    dump real tracks (uri / name / artist) from one or more sources,
               optionally excluding tracks still inside the app's cooldown window
-    create    create a private playlist from a list of URIs, optionally recording
+    create    create a playlist from a list of URIs (Spotify makes it public —
+              see cmd_create), optionally recording
               it to the app's DB (CreatedPlaylist + TrackHistory + PlaylistUsage for
               each --source) like a real build
 
@@ -1341,14 +1342,18 @@ def cmd_create(args):
 
     sp = _client()
     uid = sp.me()["id"]
-    pl = sp.user_playlist_create(
-        uid, name, public=args.public, description=args.desc or ""
-    )
+    # Spotify ignores the `public` flag: a playlist created with public=False
+    # comes back public, and a follow-up change_details(public=False) returns
+    # 200 without changing anything (verified 2026-09-25, correct scopes on the
+    # token). So don't ask for a visibility we can't get. Read the real state
+    # back and report that instead of assuming.
+    pl = sp.user_playlist_create(uid, name, description=args.desc or "")
     for i in range(0, len(uris), 100):
         sp.playlist_add_items(pl["id"], uris[i:i + 100])
 
     url = pl["external_urls"]["spotify"]
-    print(f"CREATED  {name}  ({len(uris)} tracks)")
+    visibility = "public" if sp.playlist(pl["id"], fields="public").get("public") else "private"
+    print(f"CREATED  {name}  ({len(uris)} tracks, {visibility})")
     print(url)
 
     if args.record:
@@ -1461,6 +1466,8 @@ def _cached_pool_tracks():
             with open(path, encoding="utf-8") as fh:
                 blob = json.load(fh)
         except (OSError, ValueError):
+            continue
+        if not isinstance(blob, dict):  # stray scratch dumps, not pool blobs
             continue
         if blob.get("version") != MIX_CACHE_VERSION:
             stale += 1
@@ -2225,11 +2232,10 @@ def main():
     q.add_argument("--uris-only", action="store_true", help="print only URIs (pipe straight to create)")
     q.set_defaults(func=cmd_sequence)
 
-    c = sub.add_parser("create", help="create a private playlist from URIs")
+    c = sub.add_parser("create", help="create a playlist from URIs (Spotify makes it public)")
     c.add_argument("--name", required=True)
     c.add_argument("--desc", default="")
     c.add_argument("--uris-file", help="file of URIs (else read stdin)")
-    c.add_argument("--public", action="store_true", help="make public (default private)")
     c.add_argument("--no-prefix", action="store_true",
                    help=f"don't prepend the '{MIX_PREFIX}' name tag")
     c.add_argument("--record", action="store_true",

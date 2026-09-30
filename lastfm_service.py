@@ -348,3 +348,81 @@ def user_loved_tracks(
         if name and artist:
             out.append({"artist": artist, "title": name})
     return out
+
+
+def user_top_artists(
+    user: Optional[str] = None,
+    *,
+    period: str = "overall",
+    max_pages: int = 3,
+    use_cache: bool = True,
+) -> list[dict]:
+    """The user's most-scrobbled artists: [{artist, playcount}], most-played first.
+
+    Same ``period`` vocabulary as ``user_top_tracks``. Three pages (3,000 artists) covers a
+    year of listening comfortably while keeping a cold read to a handful of calls.
+    """
+    user = user or get_user()
+    rows = _paged(
+        "user.gettopartists",
+        "topartists",
+        "artist",
+        {"user": user, "period": period},
+        max_pages=max_pages,
+        use_cache=use_cache,
+    )
+    out = []
+    for a in rows:
+        if not a.get("name"):
+            continue
+        try:
+            plays = int(a.get("playcount") or 0)
+        except (TypeError, ValueError):
+            plays = 0
+        out.append({"artist": a["name"], "playcount": plays})
+    return out
+
+
+def user_weekly_artist_charts(
+    user: Optional[str] = None,
+    *,
+    weeks: int = 13,
+    use_cache: bool = True,
+) -> list[dict]:
+    """The user's per-week artist play counts for the last ``weeks`` chart weeks.
+
+    Returns ``[{from, to, artists: {name: playcount}}]``, oldest first. This is how a caller
+    can tell *sustained* listening (played in 7 of 13 weeks) from one intense session, which a
+    windowed top-artists total can't. A finished week never changes, so those charts cache
+    forever; only the chart list and the in-progress week use the perishable TTL. A week that
+    fails to load is skipped rather than raising — callers should read ``len(result)``.
+    """
+    user = user or get_user()
+    weeks = max(1, min(int(weeks), 52))
+    body = _call("user.getweeklychartlist", {"user": user}, use_cache=use_cache, ttl=_USER_TTL)
+    charts = _as_list((body.get("weeklychartlist") or {}).get("chart"))[-weeks:]
+    now = time.time()
+    out = []
+    for c in charts:
+        frm, to = c.get("from"), c.get("to")
+        if not frm or not to:
+            continue
+        finished = float(to) < now
+        try:
+            wk = _call(
+                "user.getweeklyartistchart",
+                {"user": user, "from": frm, "to": to},
+                use_cache=use_cache,
+                ttl=None if finished else _USER_TTL,
+            )
+        except LastfmError:
+            continue
+        artists = {}
+        for a in _as_list((wk.get("weeklyartistchart") or {}).get("artist")):
+            if a.get("name"):
+                try:
+                    artists[a["name"]] = int(a.get("playcount") or 0)
+                except (TypeError, ValueError):
+                    pass
+        out.append({"from": int(frm), "to": int(to), "artists": artists})
+    return out

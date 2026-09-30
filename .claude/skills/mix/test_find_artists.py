@@ -220,6 +220,23 @@ def test_unreadable_pool_file_is_skipped(capsys):
     assert row["hits"] == 1
 
 
+def test_non_dict_json_in_cache_dir_is_skipped(capsys):
+    """Scratch dumps (a bare list of tracks, e.g. `_tn_folk.json`) land in `.mix_cache`
+    too. Valid JSON but not a pool blob — skip it rather than crash on `.get`, and
+    don't count it as a searched or stale pool."""
+    _pool("p1", [_track("Song", "The Rapture")])
+    import os
+    with open(os.path.join(mh.MIX_CACHE_DIR, "_tn_scratch.json"), "w", encoding="utf-8") as fh:
+        json.dump([_track("Other", "The Rapture")], fh)
+
+    mh.cmd_find_artists(_args(["The Rapture"], json=True))
+    out, err = capsys.readouterr()
+    (row,) = json.loads(out)
+    assert row["hits"] == 1
+    assert "1 cached pool(s)" in err
+    assert "older cache schema" not in err
+
+
 def test_pool_with_no_cached_name_falls_back_to_its_id(capsys):
     _pool("unknown-pid", [_track("Song", "The Rapture")])
     mh.cmd_find_artists(_args(["The Rapture"], json=True))

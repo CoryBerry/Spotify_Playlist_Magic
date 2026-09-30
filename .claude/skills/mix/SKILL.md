@@ -5,7 +5,7 @@ description: Design and create a Spotify playlist ("mix") from Cory's existing p
 
 # mix — design & ship a Spotify playlist
 
-Turn "design me a mix" into a real private playlist in Cory's Spotify account,
+Turn "design me a mix" into a real playlist in Cory's Spotify account,
 curated from his **existing** playlists (not random Spotify catalog). This skill
 wraps the auth → pull → curate → create flow so you never hand-roll it.
 
@@ -375,8 +375,7 @@ were forced.
 
 ### 4. Save first, then review
 **Save the playlist immediately — don't wait for approval.** Cory prefers to react to a
-real, saved playlist rather than a proposal. Default is **private**, and record + cooldown
-so it behaves like a real build:
+real, saved playlist rather than a proposal. Record + cooldown so it behaves like a real build:
 
 ```
 PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py create \
@@ -407,7 +406,11 @@ from" rule below — a heat pick (or a heat veto) is exactly as worth surfacing 
   you can pass `--name "[Mix] …"` or plain `--name "…"`; opt out with `--no-prefix`.
   `replace --name` applies the same tag, so renaming an existing mix can't quietly
   drop it out of the group; `replace` without `--name` leaves the name alone.
-- Playlists are **private** by default. Only pass `--public` if asked.
+- **Every mix comes out public.** Spotify ignores the `public` flag, both when creating a
+  playlist and when changing it later (the API returns 200 and leaves it public). So there's
+  no private option. `create` reads the real state back and prints it on the `CREATED`
+  line, so report what that line says. Never tell Cory a mix is private. If he needs one
+  private, he has to change it in the Spotify client himself.
 - `--record` logs it to `created_playlist` so it shows in the app's Recently Created page.
 - `--cooldown` (with `--record`) writes the tracks to `track_history` so future Block Mix /
   Sampler builds won't immediately replay them. Use it when the mix should participate in the
