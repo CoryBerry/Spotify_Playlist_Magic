@@ -422,6 +422,471 @@ def _leaks(text: str, names: list[str]) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Load: source data (side-effecting; everything downstream takes these as plain values)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Listening:
+    """Last.fm listening data. Every count downstream is computed from these lists."""
+    weeks: list[dict] = field(default_factory=list)       # [{from, to, artists: {name: plays}}], oldest first
+    top_12m: list[dict] = field(default_factory=list)     # [{artist, playcount}]
+    top_overall: list[dict] = field(default_factory=list)
+    loved: list[dict] = field(default_factory=list)       # [{artist, title}]
+    top_tracks: list[dict] = field(default_factory=list)  # [{artist, title, playcount}]
+
+
+@dataclass
+class Playlists:
+    """Cory's own playlists, from the local track cache: {playlist_id: {name, artists: [str]}}."""
+    pools: dict = field(default_factory=dict)
+    note: str = ""
+
+
+def load_listening(window_weeks: int = 13) -> tuple[Optional[Listening], str]:
+    """Read Last.fm. Returns (None, reason) when it's unavailable; never raises."""
+    try:
+        import lastfm_service as lfm
+        lfm.get_api_key()
+        lfm.get_user()
+        data = Listening(
+            weeks=lfm.user_weekly_artist_charts(weeks=window_weeks),
+            top_12m=lfm.user_top_artists(period="12month", max_pages=3),
+            top_overall=lfm.user_top_artists(period="overall", max_pages=2),
+            loved=lfm.user_loved_tracks(max_pages=2),
+            top_tracks=lfm.user_top_tracks(period="overall", max_pages=5),
+        )
+    except Exception as exc:  # missing key, network, rate limit — degrade, don't die
+        return None, f"Last.fm unavailable: {exc}"
+    if not (data.weeks or data.top_12m or data.top_overall):
+        return None, "Last.fm returned no listening data"
+    return data, ""
+
+
+def load_playlists(conn, cache_dir: str = DEFAULT_MIX_CACHE) -> Playlists:
+    """Cory's own playlists from the local ``.mix_cache`` — no Spotify calls.
+
+    'Own' = owned by the account that owns most of the cached playlist list, minus every
+    playlist Crate itself generated (``created_playlist``): a mix Claude picked isn't evidence
+    of what Cory chose to put together.
+    """
+    try:
+        row = conn.execute("SELECT data FROM playlist_cache LIMIT 1").fetchone()
+        listing = json.loads(row[0]) if row else []
+    except (sqlite3.Error, ValueError, TypeError):
+        listing = []
+    if not listing:
+        return Playlists(note="no playlist list cached (open Manage in the app or run "
+                              "`mix_helper.py refresh-cache`)")
+    owners: dict[str, int] = {}
+    for p in listing:
+        oid = (p.get("owner") or {}).get("id")
+        if oid:
+            owners[oid] = owners.get(oid, 0) + 1
+    me = max(owners, key=owners.get) if owners else None
+    try:
+        generated = {r[0] for r in conn.execute("SELECT playlist_id FROM created_playlist")}
+    except sqlite3.Error:
+        generated = set()
+    by_id = {p["id"]: p for p in listing if p.get("id")}
+
+    pools = {}
+    for path in sorted(glob.glob(os.path.join(cache_dir, "*.json"))):
+        pid = os.path.splitext(os.path.basename(path))[0]
+        meta = by_id.get(pid)
+        if not meta or pid in generated or (meta.get("owner") or {}).get("id") != me:
+            continue
+        try:
+            with open(path, encoding="utf-8") as fh:
+                blob = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(blob, dict):
+            continue
+        artists = [t.get("artist", "") for t in blob.get("tracks") or [] if t.get("artist")]
+        if artists:
+            pools[pid] = {"name": meta.get("name") or pid, "artists": artists}
+    note = "" if pools else "no track lists cached for your own playlists yet (build a mix once)"
+    return Playlists(pools=pools, note=note)
+
+
+def credited_artists(artist_field: str, known: dict[str, str]) -> set[str]:
+    """Which known artists a Spotify ``"A, B"`` artist field credits, as norms.
+
+    Spotify joins collaborators with ', ' — which also appears *inside* names ('Tyler, The
+    Creator'). So never split blindly: try runs of 1–3 adjacent parts against the known names.
+    """
+    out = set()
+    whole = norm(artist_field)
+    if whole in known:
+        out.add(whole)
+    parts = [p.strip() for p in artist_field.split(", ")]
+    for i in range(len(parts)):
+        for j in range(i + 1, min(i + 3, len(parts)) + 1):
+            n = norm(", ".join(parts[i:j]))
+            if n in known:
+                out.add(n)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Refresh: candidates → active set → proposed neighbor links (idempotent)
+# ---------------------------------------------------------------------------
+
+def compute_candidates(listening: Optional[Listening], playlists: Playlists, cfg: dict) -> dict:
+    """{norm: candidate} for every artist the data says Cory knows, with reasons.
+
+    Familiarity needs *spread*: several distinct weeks, a big all-time count, or several of
+    his own playlists. One intense week alone never qualifies — a fresh import isn't knowledge.
+    """
+    known: dict[str, str] = {}
+    weeks = listening.weeks if listening else []
+    recent_n = min(cfg["recent_weeks"], len(weeks))
+    per: dict[str, dict] = {}
+
+    def slot(name: str) -> dict:
+        n = norm(name)
+        known.setdefault(n, name)
+        return per.setdefault(n, {"weeks_recent": 0, "weeks_window": 0, "plays_recent": 0,
+                                  "plays_window": 0, "plays_12m": 0, "plays_all": 0,
+                                  "loved": 0, "top_track": None, "playlists": []})
+
+    if listening:
+        for idx, wk in enumerate(weeks):
+            is_recent = idx >= len(weeks) - recent_n
+            for name, plays in wk["artists"].items():
+                if plays <= 0:
+                    continue
+                c = slot(name)
+                c["weeks_window"] += 1
+                c["plays_window"] += plays
+                if is_recent:
+                    c["weeks_recent"] += 1
+                    c["plays_recent"] += plays
+        for r in listening.top_12m:
+            slot(r["artist"])["plays_12m"] = r["playcount"]
+        for r in listening.top_overall:
+            slot(r["artist"])["plays_all"] = r["playcount"]
+        for r in listening.loved:
+            slot(r["artist"])["loved"] += 1
+        for r in listening.top_tracks:  # most-played first, so first seen wins
+            n = norm(r["artist"])
+            if n in per and per[n]["top_track"] is None:
+                per[n]["top_track"] = {"title": r["title"], "plays": r["playcount"]}
+    else:
+        # Offline: only artist fields that are a single, comma-free credit become names.
+        for pool in playlists.pools.values():
+            for a in pool["artists"]:
+                if ", " not in a:
+                    known.setdefault(norm(a), a)
+
+    for pool in playlists.pools.values():
+        credited = set()
+        for a in pool["artists"]:
+            credited |= credited_artists(a, known)
+        for n in credited:
+            slot(known[n])["playlists"].append(pool["name"])
+
+    out = {}
+    W, R = len(weeks), recent_n
+    for n, c in per.items():
+        n_pl = len(c["playlists"])
+        reasons = []
+        if c["weeks_recent"] >= 2:
+            reasons.append(f"played in {c['weeks_recent']} of the last {R} weeks ({c['plays_recent']} plays)")
+        if c["weeks_window"] >= cfg["min_weeks"]:
+            reasons.append(f"played in {c['weeks_window']} of the last {W} weeks")
+        if c["plays_all"] >= cfg["anchor_min_plays"]:
+            yr = f", {c['plays_12m']} in the last year" if c["plays_12m"] else ""
+            reasons.append(f"{c['plays_all']} plays all-time{yr}")
+        if n_pl:
+            names = ", ".join(f"“{p}”" for p in sorted(c["playlists"])[:3])
+            reasons.append(f"in {n_pl} of your playlist{'s' if n_pl > 1 else ''} ({names}"
+                           + (", …)" if n_pl > 3 else ")"))
+        if c["loved"]:
+            reasons.append(f"{c['loved']} loved track{'s' if c['loved'] > 1 else ''}")
+
+        if c["weeks_recent"] >= 2 and c["weeks_window"] >= cfg["min_weeks"] - 1:
+            bucket = "recent"
+        elif c["weeks_window"] >= cfg["min_weeks"]:
+            bucket = "developing"
+        elif c["plays_all"] >= cfg["anchor_min_plays"]:
+            bucket = "anchor"
+        elif n_pl >= 3:
+            bucket = "playlist"
+        else:
+            continue  # not enough spread to call it familiar
+
+        # Log-damped plays + week counts: a 200-play binge week can't outrank steady listening.
+        score = (3 * c["weeks_recent"] + 1.5 * c["weeks_window"] + math.log2(1 + c["plays_12m"])
+                 + 0.5 * math.log2(1 + c["plays_all"]) + 0.75 * min(n_pl, 4) + 0.5 * min(c["loved"], 3))
+        tt = c["top_track"]
+        out[n] = {"name": known[n], "bucket": bucket, "score": round(score, 3), "reasons": reasons,
+                  "hook_suggested": (f"your most-played: “{tt['title']}” ({tt['plays']} plays)"
+                                     if tt else None),
+                  "counts": {k: c[k] for k in ("weeks_recent", "weeks_window", "plays_recent",
+                                               "plays_window", "plays_12m", "plays_all", "loved")},
+                  "playlists": sorted(c["playlists"]),
+                  "window": {"recent_weeks": R, "window_weeks": W}}
+    return out
+
+
+def _eligible_now(row, now: datetime) -> bool:
+    if row["choice"] in ("dismissed", "nope"):
+        return False
+    until = _dt(row["snooze_until"])
+    return not (until and until > now)
+
+
+def refresh(conn, listening: Optional[Listening], playlists: Playlists,
+            now: Optional[datetime] = None,
+            similar_fn: Optional[Callable[[str], list[dict]]] = None,
+            listening_note: str = "",
+            listeners_fn: Optional[Callable[[str], Optional[int]]] = None) -> dict:
+    """Rebuild candidates, rotate the active set, propose neighbors. Safe to run any time.
+
+    Writes only refresh-owned fields (bucket/score/evidence/hook_suggested) and *proposed*
+    data/inferred links. Hooks, pin/dismiss/snooze/nope, aliases, contexts, accepted and
+    rejected links, and all practice history are left untouched.
+    """
+    now = _now(now)
+    cfg = all_settings(conn)
+    seeded = seed_starter(conn, now)
+    cands = compute_candidates(listening, playlists, cfg)
+
+    # 1. Upsert candidate rows (refresh-owned columns only).
+    ids: dict[str, int] = {}
+    for n, c in cands.items():
+        row = conn.execute("SELECT id FROM recall_artist WHERE norm=?", (n,)).fetchone()
+        ev = json.dumps({"reasons": c["reasons"], "counts": c["counts"],
+                         "playlists": c["playlists"], "window": c["window"]}, ensure_ascii=False)
+        if row:
+            conn.execute("UPDATE recall_artist SET bucket=?, score=?, evidence=?, hook_suggested=?,"
+                         " refreshed_at=? WHERE id=?",
+                         (c["bucket"], c["score"], ev, c["hook_suggested"], _ts(now), row["id"]))
+            ids[n] = row["id"]
+        else:
+            origin = "listening" if listening else "playlist"
+            cur = conn.execute(
+                "INSERT INTO recall_artist (name, norm, loose, origin, bucket, score, evidence,"
+                " hook_suggested, created_at, refreshed_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (c["name"], n, loose(c["name"]), origin, c["bucket"], c["score"], ev,
+                 c["hook_suggested"], _ts(now), _ts(now)))
+            ids[n] = cur.lastrowid
+    # Rows the data no longer supports lose their bucket (but keep everything user-owned).
+    # Skipped when a source was down, so an outage can't wipe the candidate pool.
+    if listening is not None and cands:
+        keep = tuple(ids.values())
+        conn.execute(f"UPDATE recall_artist SET bucket=NULL, score=NULL WHERE bucket IS NOT NULL"
+                     f" AND id NOT IN ({','.join('?' * len(keep))})", keep)
+
+    # 2. Rotate the active set.
+    active = _rotate_active(conn, cfg, now, listeners_fn)
+
+    # 3. Propose neighbors for current members.
+    proposed = _propose_links(conn, playlists, similar_fn, now)
+    conn.commit()
+
+    by_bucket: dict[str, int] = {}
+    for c in cands.values():
+        by_bucket[c["bucket"]] = by_bucket.get(c["bucket"], 0) + 1
+    report = {
+        "listening": ({"weeks": len(listening.weeks), "top_12m": len(listening.top_12m),
+                       "top_overall": len(listening.top_overall), "loved": len(listening.loved),
+                       "top_tracks": len(listening.top_tracks)} if listening
+                      else {"unavailable": listening_note or "not loaded"}),
+        "playlists": {"pools": len(playlists.pools),
+                      "tracks": sum(len(p["artists"]) for p in playlists.pools.values()),
+                      "note": playlists.note},
+        "candidates": len(cands), "by_bucket": by_bucket, "active": active,
+        "links_proposed": proposed, "starter_offered": seeded,
+    }
+    report["explain"] = _explain_empty(conn, report, now)
+    return report
+
+
+def _explain_empty(conn, report: dict, now: datetime) -> str:
+    if report["active"]["size"]:
+        return ""
+    if not report["candidates"]:
+        bits = []
+        if "unavailable" in report["listening"]:
+            bits.append(report["listening"]["unavailable"])
+        if report["playlists"]["note"]:
+            bits.append(report["playlists"]["note"])
+        return ("No candidates: " + ("; ".join(bits) or "no artist had enough spread "
+                "(several weeks, big all-time count, or 3+ of your playlists)")
+                + ". Curated links still work — try `recall link` and `recall practice`.")
+    held = conn.execute("SELECT COUNT(*) FROM recall_artist WHERE bucket IS NOT NULL AND "
+                        "(choice IN ('dismissed','nope') OR snooze_until > ?)", (_ts(now),)).fetchone()[0]
+    return f"All {held} candidates are dismissed, snoozed, or marked 'nope' — unsnooze or pin some."
+
+
+def _rotate_active(conn, cfg: dict, now: datetime, listeners_fn=None) -> dict:
+    """Keep what's still valid, age out a few, fill by bucket quota.
+
+    Auto-picks skip household names (Last.fm listeners ≥ ``famous_listeners``) — nobody
+    needs practice to bring up The Beatles; the point is the Lime Garden tier. Pins ignore
+    that rule. Artists rotated out within ``rotate_days`` sit out before they can return.
+    """
+    size, rotate = cfg["set_size"], timedelta(days=cfg["rotate_days"])
+    rows = {r["id"]: r for r in conn.execute("SELECT * FROM recall_artist").fetchall()}
+    members = conn.execute("SELECT * FROM recall_active WHERE retired_at IS NULL").fetchall()
+
+    def ok(aid):  # still backed by data (or pinned) and not held back by a user choice
+        r = rows.get(aid)
+        return r is not None and _eligible_now(r, now) and (r["bucket"] or r["choice"] == "pinned")
+
+    retired, kept = [], []
+    for m in members:
+        (kept if ok(m["artist_id"]) else retired).append(m)
+    # Stagger rotation: at most a quarter of the set ages out per refresh, oldest first.
+    aged = sorted((m for m in kept if rows[m["artist_id"]]["choice"] != "pinned"
+                   and now - _dt(m["selected_at"]) > rotate), key=lambda m: m["selected_at"])
+    for m in aged[: max(1, size // 4)]:
+        kept.remove(m)
+        retired.append(m)
+    # Shrink if the size setting dropped: lowest-score non-pinned go first.
+    overflow = len(kept) - size
+    if overflow > 0:
+        for m in sorted((m for m in kept if rows[m["artist_id"]]["choice"] != "pinned"),
+                        key=lambda m: rows[m["artist_id"]]["score"] or 0)[:overflow]:
+            kept.remove(m)
+            retired.append(m)
+    for m in retired:
+        conn.execute("UPDATE recall_active SET retired_at=? WHERE id=?", (_ts(now), m["id"]))
+
+    have = {m["artist_id"] for m in kept}
+    recently_retired = {m["artist_id"] for m in retired} | {r[0] for r in conn.execute(
+        "SELECT artist_id FROM recall_active WHERE retired_at > ?", (_ts(now - rotate),))}
+    added, famous = [], []
+
+    def too_famous(r) -> bool:
+        n = r["listeners"]
+        if n is None and listeners_fn:
+            try:
+                n = listeners_fn(r["name"])
+            except Exception:
+                n = None
+            if n is not None:
+                conn.execute("UPDATE recall_artist SET listeners=? WHERE id=?", (n, r["id"]))
+        if n is not None and n >= cfg["famous_listeners"]:
+            famous.append(r["name"])
+            return True
+        return False
+
+    def add(aid, why):
+        r = rows[aid]
+        reasons = json.loads(r["evidence"] or "{}").get("reasons") or []
+        conn.execute("INSERT INTO recall_active (artist_id, bucket, reason, selected_at) VALUES (?,?,?,?)",
+                     (aid, r["bucket"], why or (reasons[0] if reasons else "pinned"), _ts(now)))
+        have.add(aid)
+        added.append(r["name"])
+
+    for aid, r in rows.items():  # pins always belong
+        if r["choice"] == "pinned" and aid not in have and ok(aid):
+            add(aid, "pinned")
+
+    pool = [r for aid, r in rows.items() if aid not in have and aid not in recently_retired and ok(aid)]
+    quotas = {"recent": round(size * 0.4), "developing": round(size * 0.3), "anchor": round(size * 0.3)}
+    for bucket, quota in quotas.items():
+        have_b = sum(1 for aid in have if rows[aid]["bucket"] == bucket)
+        for r in sorted((r for r in pool if r["bucket"] == bucket), key=lambda r: -(r["score"] or 0)):
+            if have_b >= quota or len(have) >= size:
+                break
+            if r["id"] not in have and r["name"] not in famous and not too_famous(r):
+                add(r["id"], None)
+                have_b += 1
+    for r in sorted(pool, key=lambda r: -(r["score"] or 0)):  # fill any shortfall by score
+        if len(have) >= size:
+            break
+        if r["id"] not in have and r["name"] not in famous and not too_famous(r):
+            add(r["id"], None)
+    return {"size": len(have), "kept": len(kept), "added": added, "skipped_famous": famous,
+            "retired": [rows[m["artist_id"]]["name"] for m in retired if m["artist_id"] in rows]}
+
+
+def _propose_links(conn, playlists: Playlists, similar_fn, now: datetime) -> int:
+    """Up to 3 data neighbors (shared own-playlist placement) + 2 inferred (Last.fm similar)
+    per active member, restricted to artists Cory already knows. Proposals only."""
+    universe = {r["norm"]: r for r in conn.execute(
+        "SELECT id, name, norm FROM recall_artist WHERE bucket IS NOT NULL").fetchall()}
+    known = {n: r["name"] for n, r in universe.items()}
+    sets: dict[str, set] = {}
+    for pid, pool in playlists.pools.items():
+        credited = set()
+        for a in pool["artists"]:
+            credited |= credited_artists(a, known)
+        for n in credited:
+            sets.setdefault(n, set()).add(pid)
+    members = conn.execute("SELECT a.id, a.name, a.norm FROM recall_active m JOIN recall_artist a "
+                           "ON a.id=m.artist_id WHERE m.retired_at IS NULL").fetchall()
+    n_new = 0
+    for m in members:
+        mine = sets.get(m["norm"], set())
+        scored = []
+        for n, s in sets.items():
+            shared = mine & s
+            if n == m["norm"] or len(shared) < 2:
+                continue
+            cos = len(shared) / math.sqrt(len(mine) * len(s))
+            scored.append((cos, n, shared))
+        for cos, n, shared in sorted(scored, key=lambda x: -x[0])[:3]:
+            names = sorted(playlists.pools[p]["name"] for p in shared)
+            reason = (f"both in {len(shared)} of your playlists: "
+                      + ", ".join(f"“{x}”" for x in names[:3]) + (", …" if len(names) > 3 else ""))
+            n_new += _upsert_proposal(conn, m["id"], universe[n]["id"], "data", reason,
+                                      {"playlists": names}, round(cos, 3), now)
+        if similar_fn:
+            try:
+                sims = similar_fn(m["name"]) or []
+            except Exception:
+                sims = []
+            picks = [s for s in sims if norm(s["name"]) in universe and norm(s["name"]) != m["norm"]
+                     and s.get("match", 0) >= 0.2][:2]
+            for s in picks:
+                n_new += _upsert_proposal(
+                    conn, m["id"], universe[norm(s["name"])]["id"], "inferred",
+                    f"Last.fm lists them as similar (match {s['match']:.2f}) — a suggestion, not your pick",
+                    {"lastfm_match": s["match"]}, round(float(s["match"]), 3), now)
+    return n_new
+
+
+def _upsert_proposal(conn, src, dst, origin, reason, evidence, confidence, now) -> int:
+    row = conn.execute("SELECT id, origin, state FROM recall_link WHERE src_id=? AND dst_id=?",
+                       (src, dst)).fetchone()
+    if row is None:
+        conn.execute("INSERT INTO recall_link (src_id, dst_id, origin, state, reason, evidence,"
+                     " confidence, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                     (src, dst, origin, "proposed", reason, json.dumps(evidence, ensure_ascii=False),
+                      confidence, _ts(now), _ts(now)))
+        return 1
+    # Only refresh our own still-open proposals; data outranks inferred for the same pair.
+    if row["state"] == "proposed" and row["origin"] in ("data", "inferred") and \
+            not (row["origin"] == "data" and origin == "inferred"):
+        conn.execute("UPDATE recall_link SET origin=?, reason=?, evidence=?, confidence=?, updated_at=?"
+                     " WHERE id=?", (origin, reason, json.dumps(evidence, ensure_ascii=False),
+                                     confidence, _ts(now), row["id"]))
+    return 0
+
+
+def run_refresh(conn, cache_dir: str = DEFAULT_MIX_CACHE, use_similar: bool = True,
+                now: Optional[datetime] = None) -> dict:
+    """The side-effecting wrapper both surfaces call: load sources, then ``refresh``."""
+    listening, note = load_listening(get_setting(conn, "window_weeks"))
+    playlists = load_playlists(conn, cache_dir)
+    similar_fn = listeners_fn = None
+    if listening is not None:
+        import lastfm_service as lfm
+
+        def listeners_fn(name):
+            info = lfm.artist_info(name)
+            return info["listeners"] if info else None
+        if use_similar:
+            similar_fn = lambda name: lfm.similar_artists(name, limit=30)  # noqa: E731
+    return refresh(conn, listening, playlists, now, similar_fn, note, listeners_fn)
+
+
+# ---------------------------------------------------------------------------
 # Curation
 # ---------------------------------------------------------------------------
 
