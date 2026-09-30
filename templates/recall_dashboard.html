@@ -5,8 +5,12 @@
 {% block content %}
   <div class="d-flex justify-content-between align-items-baseline mb-2">
     <h2 class="mb-0">&#129504; Recall <span class="text-muted fs-6">{{ active|length }} ready to recommend</span></h2>
-    <form method="post" action="{{ url_for('recall_refresh') }}">
+    <form method="post" action="{{ url_for('recall_refresh') }}" class="text-end" id="recall-refresh-form">
       <button type="submit" class="btn btn-outline-primary btn-sm">Refresh</button>
+      <div class="form-text small">
+        {% if refresh_slow %}First refresh takes about 2 minutes (one-time Last.fm lookups).
+        {% else %}Usually takes a few seconds.{% endif %}
+      </div>
     </form>
   </div>
   <p class="text-muted small">
@@ -129,6 +133,11 @@
 
 {% block scripts %}
 <script>
+document.getElementById("recall-refresh-form").addEventListener("submit", function () {
+  const btn = this.querySelector("button");
+  btn.disabled = true;
+  btn.textContent = "Refreshing…";
+});
 (function () {
   const card = document.getElementById("practiceCard");
   const startBtn = document.getElementById("practiceStartBtn");

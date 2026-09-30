@@ -139,13 +139,17 @@ def _as_list(value: Any) -> list:
 # Enrichment (the useful surface)
 # ---------------------------------------------------------------------------
 
-def artist_info(name: str, *, use_cache: bool = True) -> Optional[dict]:
+def artist_info(name: str, *, autocorrect: bool = True, use_cache: bool = True) -> Optional[dict]:
     """Return a flattened summary for an artist, or None if Last.fm doesn't know it.
 
     {name, listeners, playcount, tags: [str], similar: [str], bio: str}
+
+    ``autocorrect`` fixes typos but can also redirect a correct name to a different act
+    (Ratboys → Ratboy); pass False when the name already came from Last.fm or Spotify.
     """
     try:
-        body = _call("artist.getinfo", {"artist": name, "autocorrect": "1"}, use_cache=use_cache)
+        body = _call("artist.getinfo", {"artist": name, "autocorrect": "1" if autocorrect else "0"},
+                     use_cache=use_cache)
     except LastfmError:
         return None
     a = body.get("artist")
