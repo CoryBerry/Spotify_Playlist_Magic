@@ -19,6 +19,7 @@ Usage:
     python cli.py create --name "Rainy Sunday" --from tracks.txt --description "mellow 80-100bpm"
     cat tracks.txt | python cli.py create --name "Focus" -
     python cli.py backup                                    # dump the DB to profile/backups/
+    python cli.py recall practice                           # music recall — see recall_cli.py
 
 Pass ``--json`` on any command for machine-readable output (what an agent parses).
 """
@@ -33,6 +34,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
+from recall_cli import add_recall_parser
 from spotify_service import (
     SpotifyAuthError,
     create_playlist_from_lines,
@@ -295,6 +297,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp_backup.add_argument("--db", default=DEFAULT_DB, help=f"path to the SQLite DB (default {DEFAULT_DB})")
     sp_backup.add_argument("--out", default=DEFAULT_DUMP, help=f"path to write (default {DEFAULT_DUMP})")
     sp_backup.set_defaults(func=cmd_backup)
+
+    add_recall_parser(sub, common)
 
     return p
 
