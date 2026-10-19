@@ -633,7 +633,7 @@ def _mine_label(mine):
 # Turn a flat pool of already-curated tracks into an intentional "ride ups and
 # downs" running order. The taste part — how energetic each track is — stays with
 # the caller (Spotify killed /audio-features, so it can't be derived): each track
-# carries an integer `energy` level (e.g. 1=mellow, 2=mid, 3=banger). This code
+# carries an integer `energy` level on the house 1–5 scale (ENERGY_SCALE). This code
 # only owns the *arc math*: an oscillating energy curve with an eased opening and
 # a firm soft-landing tail, mapped onto the real per-level supply so the counts
 # always work out, then filled avoiding adjacent same-artist clumps.
@@ -644,12 +644,21 @@ def _mine_label(mine):
 
 _SPARK_BLOCKS = "▁▂▃▄▅▆▇█"
 
+# The house energy scale — one shared vocabulary across every mix and brief.
+# 1 Still · 2 Easy · 3 Cruise · 4 Drive · 5 Peak (anchors in the mix SKILL.md).
+ENERGY_MIN, ENERGY_MAX = 1, 5
 
-def _spark(values):
-    """Compact unicode sparkline of a numeric sequence, for a stderr eyeball."""
+
+def _spark(values, lo=None, hi=None):
+    """Compact unicode sparkline of a numeric sequence, for a stderr eyeball.
+
+    Pass `lo`/`hi` to draw against a fixed scale; otherwise it stretches to the
+    values' own min/max.
+    """
     if not values:
         return ""
-    lo, hi = min(values), max(values)
+    lo = min(values) if lo is None else lo
+    hi = max(values) if hi is None else hi
     if hi == lo:
         return _SPARK_BLOCKS[0] * len(values)
     span = len(_SPARK_BLOCKS) - 1
@@ -1219,8 +1228,8 @@ def cmd_sequence(args):
     """Reorder a curated pool into an energy arc — pure local logic, no Spotify.
 
     Input lines: `uri<TAB>energy[<TAB>artist[<TAB>name[<TAB>lane]]]` (blank / '#'
-    lines ignored). `energy` is your own integer level (e.g. 1=mellow, 2=mid,
-    3=banger) and `lane` your own genre bucket (e.g. dance-punk, disco) — the two
+    lines ignored). `energy` is your own integer level on the house 1–5 scale
+    (1 Still · 2 Easy · 3 Cruise · 4 Drive · 5 Peak) and `lane` your own genre bucket (e.g. dance-punk, disco) — the two
     bits taste has to supply. Later columns are optional but positional: to give a
     lane without an artist/name, leave those columns empty. Prints the same lines
     reordered into the arc (trailing empty columns trimmed, so it round-trips),
@@ -1242,6 +1251,9 @@ def cmd_sequence(args):
             energy = int(float(parts[1]))
         except ValueError:
             sys.exit(f"bad energy {parts[1]!r} on line: {line!r}")
+        if not ENERGY_MIN <= energy <= ENERGY_MAX:
+            sys.exit(f"energy {energy} is off the {ENERGY_MIN}–{ENERGY_MAX} scale "
+                     f"on line: {line!r}")
         tracks.append({
             "uri": uri,
             "energy": energy,
@@ -1268,7 +1280,9 @@ def cmd_sequence(args):
     levels = sorted({t["energy"] for t in tracks})
     print(f"# {len(seq)} tracks · waves={args.waves:g} · landing={args.landing:g} · "
           f"levels={levels}", file=sys.stderr)
-    print("# energy " + _spark([t["energy"] for t in seq]), file=sys.stderr)
+    # fixed 1–5 scale, so a mix that lives in 3–4 doesn't draw as floor-to-ceiling
+    print("# energy " + _spark([t["energy"] for t in seq], ENERGY_MIN, ENERGY_MAX),
+          file=sys.stderr)
 
     lane_counts = {}
     for t in tracks:
