@@ -94,3 +94,93 @@ def test_save_is_atomic_and_leaves_no_temp_files(env, tmp_path):
     path, _ = env
     lf._save_cache({"k": 1}, path)
     assert sorted(p.name for p in tmp_path.iterdir()) == ["cache.json"]
+
+
+# --- #46: slimmed cache entries --------------------------------------------
+
+_IMG = [{"size": s, "#text": f"https://img.example/{s}.png"} for s in ("small", "medium", "large")]
+
+
+def _raw_track(name, artist, plays=None):
+    t = {"name": name, "mbid": "", "url": "https://last.fm/x", "image": _IMG,
+         "streamable": {"fulltrack": "0", "#text": "0"},
+         "artist": {"name": artist, "mbid": "abc", "url": "https://last.fm/a"},
+         "date": {"uts": "1", "#text": "x"}}
+    if plays is not None:
+        t["playcount"] = str(plays)
+    return t
+
+
+RAW = {
+    "user.gettoptracks": {"toptracks": {
+        "track": [_raw_track("Fade Into You", "Mazzy Star", 42), _raw_track("Rudy", "The Specials", 7)],
+        "@attr": {"user": "u", "totalPages": "1", "page": "1", "total": "2", "perPage": "1000"}}},
+    "user.getlovedtracks": {"lovedtracks": {
+        "track": _raw_track("Rudy", "The Specials"),  # Last.fm collapses a 1-item list to a dict
+        "@attr": {"totalPages": "1"}}},
+    "artist.gettoptags": {"toptags": {
+        "tag": [{"name": "dance-punk", "count": 100, "url": "https://last.fm/tag/dp"},
+                {"name": "indie", "count": 40, "url": "https://last.fm/tag/i"}],
+        "@attr": {"artist": "LCD Soundsystem"}}},
+    "user.gettopartists": {"topartists": {
+        "artist": [{"name": "Wednesday", "playcount": "99", "image": _IMG, "url": "u", "mbid": ""}],
+        "@attr": {"totalPages": "1"}}},
+}
+
+
+def _fake_call_from(bodies):
+    def fake(method, params, **kw):
+        return bodies[method]
+    return fake
+
+
+def test_slimmed_bodies_parse_identically(monkeypatch):
+    slim = {m: lf._slim(m, b) for m, b in RAW.items()}
+    results = []
+    for bodies in (RAW, slim):
+        monkeypatch.setattr(lf, "_call", _fake_call_from(bodies))
+        results.append((
+            lf.user_top_tracks("u"), lf.user_loved_tracks("u"),
+            lf.artist_top_tags("LCD Soundsystem"), lf.user_top_artists("u"),
+        ))
+    assert results[0] == results[1]
+    assert results[0][0][0] == {"artist": "Mazzy Star", "title": "Fade Into You", "playcount": 42}
+
+
+def test_slim_drops_the_bulk():
+    for method, body in RAW.items():
+        assert len(json.dumps(lf._slim(method, body))) < len(json.dumps(body)) / 2, method
+    assert "image" not in json.dumps(lf._slim("user.gettoptracks", RAW["user.gettoptracks"]))
+
+
+def test_unknown_methods_pass_through_raw():
+    body = {"artist": {"name": "X", "bio": {"summary": "hi"}}}
+    assert lf._slim("artist.getinfo", body) is body
+
+
+def test_miss_caches_the_slim_body(env, monkeypatch):
+    path, _ = env
+    raw = RAW["artist.gettoptags"]
+    monkeypatch.setattr(lf.urllib.request, "urlopen",
+                        lambda req, timeout=15: _FakeResp(json.dumps(raw).encode()))
+    got = _tags(path, "LCD Soundsystem")
+    assert got == lf._slim("artist.gettoptags", raw)
+    lf.flush_cache()
+    with open(path, encoding="utf-8") as fh:
+        assert "url" not in fh.read()
+
+
+def test_compact_cache_slims_both_entry_shapes_in_place(env):
+    path, _ = env
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({
+            "artist.gettoptags?artist=LCD": RAW["artist.gettoptags"],
+            "user.gettoptracks?page=1&user=u": {"_ts": 123.0, "_body": RAW["user.gettoptracks"]},
+        }, fh, indent=2)
+    before, after = lf.compact_cache(path)
+    assert after < before
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    assert data["artist.gettoptags?artist=LCD"] == lf._slim("artist.gettoptags", RAW["artist.gettoptags"])
+    assert data["user.gettoptracks?page=1&user=u"]["_ts"] == 123.0  # TTL wrapper preserved
+    assert "image" not in json.dumps(data)
