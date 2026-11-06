@@ -80,8 +80,15 @@ where the bonus material started.
 ### 3. Ship
 
 ```
-PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py create --name "Albums - …" --desc "…" --uris-file pool.txt --record --no-prefix
+PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py create --name "Albums - …" --desc "…" --uris-file pool.txt --record --no-prefix --tag pool --tag <genre>
 ```
+
+**Always tag the pool: `--tag pool` plus the genre(s) Cory would ask for.** A scene title
+like "Texas Songwriters" or "Bakersfield Sound" never says "country", and tags are how a
+later genre request finds the pool. Reuse the Manage-page vocabulary (`country`, `folk`,
+`punk`, `hiphop`, `electronic`, `jazz`, `rock`, `world`, `soul`, `decade`, …) rather
+than inventing near-synonyms. Add a second genre where a pool genuinely straddles two.
+`--tag` is idempotent, so re-passing it on `replace` is harmless.
 
 ### 4. Extend an existing pool
 
@@ -90,7 +97,7 @@ chronological slot instead of being tacked on the end. Then `replace` keeps the 
 
 ```
 PYTHONUTF8=1 python .claude/skills/albums/albums_helper.py plan --from new.txt --extend "Albums - Dance-Punk II" --uris pool.txt
-PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py replace --playlist <id> --uris-file pool.txt --record --no-prefix
+PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py replace --playlist <id> --uris-file pool.txt --record --no-prefix --tag pool --tag <genre>
 ```
 
 ## Inclusion rules
