@@ -17,6 +17,7 @@ API. Pass ``use_cache=False`` to bypass.
 """
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import time
@@ -62,17 +63,72 @@ def get_user() -> str:
     return user
 
 
-def _load_cache(path: str) -> dict:
+# The cache is parsed at most once per process and kept in memory, keyed by path. It used to be
+# re-read on *every* call and fully rewritten on every miss — fine at a few KB, ruinous at
+# 9 MB: fanning `roster --heat` over ~400 artists spent minutes re-parsing an already-warm
+# file. Misses now just mark the path dirty; it's flushed at most every _FLUSH_EVERY seconds
+# and once more at exit, so a cold fan-out costs a handful of writes instead of one per artist.
+_MEMO: dict[str, dict] = {}
+_DIRTY: set[str] = set()
+_LAST_FLUSH: dict[str, float] = {}
+_FLUSH_EVERY = 5.0  # seconds
+
+
+def _read_cache_file(path: str) -> dict:
     try:
         with open(path, "r", encoding="utf-8") as fh:
-            return json.load(fh)
-    except (FileNotFoundError, json.JSONDecodeError):
+            data = json.load(fh)
+    except FileNotFoundError:
         return {}
+    except json.JSONDecodeError:
+        # Keep the bad file for inspection instead of silently overwriting it on next flush.
+        try:
+            os.replace(path, path + ".corrupt")
+        except OSError:
+            pass
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _load_cache(path: str) -> dict:
+    """The in-memory cache for ``path``, reading the file only on first use this process."""
+    if path not in _MEMO:
+        _MEMO[path] = _read_cache_file(path)
+        _LAST_FLUSH[path] = time.monotonic()
+    return _MEMO[path]
 
 
 def _save_cache(cache: dict, path: str) -> None:
-    with open(path, "w", encoding="utf-8") as fh:
+    """Write atomically (temp file + rename) so a killed process can't truncate the cache."""
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(cache, fh, indent=2, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def _mark_dirty(path: str) -> None:
+    _DIRTY.add(path)
+    if time.monotonic() - _LAST_FLUSH.get(path, 0.0) >= _FLUSH_EVERY:
+        _flush(path)
+
+
+def _flush(path: str) -> None:
+    if path in _DIRTY and path in _MEMO:
+        _save_cache(_MEMO[path], path)
+        _DIRTY.discard(path)
+    _LAST_FLUSH[path] = time.monotonic()
+
+
+def flush_cache() -> None:
+    """Write any pending cache entries to disk. Runs automatically at interpreter exit."""
+    for path in list(_DIRTY):
+        try:
+            _flush(path)
+        except OSError:
+            pass
+
+
+atexit.register(flush_cache)
 
 
 def _call(
@@ -124,7 +180,7 @@ def _call(
 
     if use_cache:
         cache[ck] = body if ttl is None else {"_ts": time.time(), "_body": body}
-        _save_cache(cache, cache_path)
+        _mark_dirty(cache_path)
     return body
 
 
