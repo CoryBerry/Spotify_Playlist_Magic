@@ -99,11 +99,82 @@ def _load_cache(path: str) -> dict:
 
 
 def _save_cache(cache: dict, path: str) -> None:
-    """Write atomically (temp file + rename) so a killed process can't truncate the cache."""
+    """Write atomically (temp file + rename) so a killed process can't truncate the cache.
+
+    Compact JSON on purpose: indentation alone was ~20% of a multi-MB file nobody hand-reads.
+    """
     tmp = f"{path}.{os.getpid()}.tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(cache, fh, indent=2, ensure_ascii=False)
+        json.dump(cache, fh, ensure_ascii=False, separators=(",", ":"))
     os.replace(tmp, path)
+
+
+# ---------------------------------------------------------------------------
+# Response slimming — cache only the fields the parsers below actually read
+# ---------------------------------------------------------------------------
+# Raw bodies are mostly image arrays, URLs, mbids and streamable flags: a 1000-track
+# user.gettoptracks page is ~1.3 MB raw and ~60 KB slimmed. Each slimmer keeps the response
+# *shape* (same nesting, same keys) so the parsers can't tell a slim body from a raw one.
+# Methods without a slimmer are cached raw — they're low-volume.
+
+def _slim_track(t: Any) -> Any:
+    if not isinstance(t, dict):
+        return t
+    out = {k: t[k] for k in ("name", "playcount") if k in t}
+    if isinstance(t.get("artist"), dict):
+        out["artist"] = {"name": t["artist"].get("name")}
+    return out
+
+
+def _slim_paged(root: str, node: str):
+    def slim(body: dict) -> dict:
+        container = body.get(root)
+        if not isinstance(container, dict):
+            return body
+        out: dict = {node: [_slim_track(i) for i in _as_list(container.get(node))]}
+        attr = container.get("@attr")
+        if isinstance(attr, dict) and "totalPages" in attr:
+            out["@attr"] = {"totalPages": attr["totalPages"]}
+        return {root: out}
+    return slim
+
+
+def _slim_toptags(body: dict) -> dict:
+    container = body.get("toptags")
+    if not isinstance(container, dict):
+        return body
+    tags = [{k: t[k] for k in ("name", "count") if k in t}
+            for t in _as_list(container.get("tag")) if isinstance(t, dict)]
+    return {"toptags": {"tag": tags}}
+
+
+_SLIMMERS = {
+    "artist.gettoptags": _slim_toptags,
+    "user.gettoptracks": _slim_paged("toptracks", "track"),
+    "user.getlovedtracks": _slim_paged("lovedtracks", "track"),
+    "user.gettopartists": _slim_paged("topartists", "artist"),
+}
+
+
+def _slim(method: str, body: Any) -> Any:
+    fn = _SLIMMERS.get(method)
+    return fn(body) if fn and isinstance(body, dict) else body
+
+
+def compact_cache(path: Optional[str] = None) -> tuple[int, int]:
+    """Slim every entry already on disk (no refetch). Returns (bytes_before, bytes_after)."""
+    path = path or DEFAULT_CACHE
+    before = os.path.getsize(path) if os.path.exists(path) else 0
+    cache = _load_cache(path)
+    for ck, hit in cache.items():
+        method = ck.split("?", 1)[0]
+        if isinstance(hit, dict) and "_ts" in hit and "_body" in hit:
+            hit["_body"] = _slim(method, hit["_body"])
+        else:
+            cache[ck] = _slim(method, hit)
+    _save_cache(cache, path)
+    _DIRTY.discard(path)
+    return before, os.path.getsize(path)
 
 
 def _mark_dirty(path: str) -> None:
@@ -178,6 +249,8 @@ def _call(
     if isinstance(body, dict) and "error" in body:
         raise LastfmError(f"Last.fm error {body['error']}: {body.get('message', '')}")
 
+    # Slim before returning too, so a miss and a later hit hand callers the identical body.
+    body = _slim(method, body)
     if use_cache:
         cache[ck] = body if ttl is None else {"_ts": time.time(), "_body": body}
         _mark_dirty(cache_path)
@@ -486,3 +559,13 @@ def user_weekly_artist_charts(
                     pass
         out.append({"from": int(frm), "to": int(to), "artists": artists})
     return out
+
+
+if __name__ == "__main__":
+    import sys
+
+    if sys.argv[1:] == ["--compact-cache"]:
+        b, a = compact_cache()
+        print(f"compacted {DEFAULT_CACHE}: {b / 1e6:.1f} MB -> {a / 1e6:.2f} MB")
+    else:
+        sys.exit("usage: python lastfm_service.py --compact-cache")
