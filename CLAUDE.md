@@ -98,7 +98,8 @@ PlaylistCache     # cached Spotify playlist list, 15min/24h TTL tiers (falls bac
 CreatedPlaylist   # history of every Block Mix / Album Blast created (alive/checked_at, gen_seconds, track_count)
 PlaylistUsage     # use_count + last_used per playlist+provider — drives "most used" sort
 TrackHistory      # track_id + used_at — 7-day cooldown pool to avoid replaying recent tracks
-TrackIce          # manual never-list / timed freeze (thaw_at NULL=never); HARD exclusion honored by every build + the mix skill
+TrackIce          # manual never-list / timed freeze (thaw_at NULL=never); HARD exclusion honored by every build + the mix skill;
+                  # a `spotify:artist:<id>` track_id freezes a whole artist (Spotify builds only, #10)
 BuildSource       # source playlists of a Block Mix build, in cycle order (name/owner/position/weight); FK → CreatedPlaylist
 ThawTally         # monthly count of tracks thawed from cooldown, per (year, month, provider)
 AppSettings       # user-tunable cooldown_days (default 7) + cooldown_max_plays (default 2); driven by /settings
@@ -178,6 +179,8 @@ choice/hook vs refresh-owned bucket/score/evidence), `recall_alias`, `recall_lin
 **7-day cooldown:** tracks used in any build are written to `TrackHistory`. New builds exclude them unless the remaining pool would be smaller than `block_size` (safety fallback keeps the build from failing).
 
 **Ice box (`TrackIce` + `iced_ids(provider)`):** a manual, long-lived exclusion — never-list (`thaw_at` NULL) or timed freeze (`thaw_at` in the future). Unlike cooldown, it's a **hard** exclusion: `iced_ids()` is filtered from the pool *before* the cooldown fallback (so an iced track never returns on a small pool) and applied as a final filter on the deterministic tools (Album Blast, Text Import) too. Timed ice is released by `auto_thaw()` alongside cooldown and folded into the same `ThawTally`. Curated from both the `mix` skill (`mix_helper.py ice add/list/thaw`) and the web Ice Box (`/spotify/ice-box`, `/spotify/ice/{freeze,thaw,search}`), which read/write the same table — a freeze in either surface is honored by the next build with no sync step. The web freeze snowflake (`templates/_ice.html` macro + a delegated handler in `base.html`) also appears on the build done page and Stats tracklists. `_add_months()` in `app.py` mirrors the mix skill's helper so both writers land identical thaw dates.
+
+**Artist ice (#10):** a frozen artist is a `TrackIce` row whose `track_id` is `spotify:artist:<id>` — the URI prefix is the discriminator (no `kind` column), so upsert, thaw, and `auto_thaw` work unchanged. `iced_ids()` returns **track rows only**; `iced_artist_ids()` returns bare frozen artist ids. Spotify build sites call `iced_for(sp, uris, known)` instead of `iced_ids("spotify")`, which **pre-expands** the exclusion set with every URI credited to a frozen artist — so the existing `u not in iced` filters stay untouched. Sites pass the `{uri: [artist_id]}` they already fetched (Block Mix / Album Sampler widen `fields=` to `artists(id)`; `album_tracks` items carry ids); anything missing (Text Import, Feed Radar) is looked up via `sp.tracks` 50 at a time — only when an artist is actually frozen. The pure expander is `spotify_service.artist_iced_uris`, tested in `test_artist_ice.py`. Not yet: Plex, and the `mix` skill (artist rows are inert there — they never match a track URI).
 
 **Local folders (`FOLDER_PREFIX` on `PlaylistTag`):** Spotify's Web API has **no folder
 endpoints** — folders live only in the client's internal rootlist, which an app token can't
