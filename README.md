@@ -63,6 +63,17 @@ A manual, long-lived exclusion list — a **hard** never-list or a timed freeze 
 - **Freeze a track** search resolves any Spotify title/artist and freezes it for **Never / 12 / 6 / 3 months** with an optional reason — even tracks that aren't in any recent build.
 - The same 🧊 snowflake dropdown appears on the **build done page** tracklist and the **Playlist Stats** tracklist, and a 🧊 shortcut on each **Manage** row jumps to that playlist's tracklist. Timed ice thaws itself on the same schedule as the cooldown.
 
+### 🧠 Recall
+
+Practice turning artists you *recognize* into names you can *bring up* — so the next time a band comes on and someone says "I love these guys," the two artists you'd recommend are on the tip of your tongue instead of arriving two minutes after you leave.
+
+- **Ready-to-recommend set** — a small rotating set (default 30, configurable 15–50) built from your real listening. Every artist shows *why* it's there ("played in 9 of the last 13 weeks", "in 4 of your playlists"). Pin, dismiss, snooze, or mark **nope** ("I know them, I just don't recommend them") — refreshes never overwrite those choices.
+- **Hooks and neighbors** — give an artist a one-line hook, and link artists ("when Remember Sports comes up → Lime Garden"). Crate *suggests* neighbors from your own playlists and Last.fm's similar artists, but only links you accept become practice material.
+- **Short practice sessions** — 2–3 minutes, up to three conversational prompts ("Someone says they like X. Name two artists you'd recommend."). Answers stay hidden until you try, ask for a hint, or reveal. Rate yourself — *came easily / took a moment / couldn't recall* — and that drives when each prompt comes back. No streaks, no scores.
+- **Two surfaces, one engine** — the `/recall` page (dashboard, per-artist detail, practice card) and `python cli.py recall …` in the terminal share one engine and one database — curate or practice in either and the other sees it.
+
+Needs a Last.fm account — see [Recall Setup](#recall-setup-optional).
+
 ### 🕓 Recently Created
 
 A history of every Block Mix and Album Blast you've built, with creation date, track count, and build time. Shows whether each playlist is still alive or has been deleted. You can remove dead entries in bulk or delete a playlist directly from this page. Also displays a live cooldown summary — how many tracks are on ice, when they warm up, and how many have thawed over time.
@@ -180,6 +191,34 @@ firecrawl login
 ```
 
 The app reuses this login — no API key goes in `.env`. If Firecrawl isn't installed or authenticated, the rest of the app is unaffected; Feed Radar just shows a clear "run `firecrawl login`" message when you hit **Check now**. Note that the AI-extraction sources take ~2 minutes and cost more Firecrawl credits per check than the fast regex sources.
+
+---
+
+## Recall Setup (optional)
+
+**🧠 Recall** reads your listening history from [Last.fm](https://www.last.fm/), so it needs a scrobbling account and a free API key.
+
+### 1. Add Last.fm to your `.env`
+
+```
+LASTFM_API_KEY=your_key      # free: https://www.last.fm/api/account/create
+LASTFM_USER=your_username
+```
+
+Your playlists come from the app's local playlist cache — open **Manage** once so it's populated. Recall makes no Spotify calls of its own.
+
+### 2. Your first session
+
+1. **Refresh.** Click **Refresh** on `/recall` (or `python cli.py recall refresh`). The first one takes about 2 minutes — it checks Last.fm listener counts so household names (The Beatles tier) are left out of the set; nobody needs practice to bring those up. Later refreshes only top up a few slots.
+2. **Accept the starter pair.** Crate seeds one suggested link from the story that started this feature: *Remember Sports → Lime Garden, Hop Along*. Accept it (or reject it), then accept or reject a few of the suggested neighbors. Add your own with `recall link "Artist A" "Artist B"` or from any artist's page.
+3. **Practice.** Hit **Start practice** on the dashboard (or `python cli.py recall practice`). Answer, hint, or reveal — then rate yourself.
+4. **Check in.** `python cli.py recall stats` (or the dashboard) shows recent recalls and the prompts giving you trouble. Remembered one in a real conversation? Log it: `python cli.py recall note "recommended Hop Along at the brewery"`.
+
+Run `python cli.py recall --help` for the full command list (`pin`, `snooze`, `hook`, `alias`, `context`, `config`, …).
+
+**What it uses:** Last.fm weekly artist charts (last 13 weeks), top artists (12-month and all-time), top tracks (for suggested hooks), loved tracks, global listener counts (to skip household names), and similar artists (for suggested neighbors) — plus which of *your own* playlists each artist appears in. Mixes Crate generated don't count as evidence. Spotify listening history isn't used (the API doesn't expose it).
+
+**Not built yet:** an association graph view, a weekly ready-to-recommend digest, playlists that reinforce the active set, prompts tied to what you just heard, and reminders.
 
 ---
 
