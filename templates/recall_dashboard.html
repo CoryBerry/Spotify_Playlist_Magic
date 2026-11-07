@@ -1,0 +1,321 @@
+{% extends "base.html" %}
+
+{% block title %}Recall{% endblock %}
+
+{% block content %}
+  <div class="d-flex justify-content-between align-items-baseline mb-2">
+    <h2 class="mb-0">&#129504; Recall <span class="text-muted fs-6">{{ active|length }} ready to recommend</span></h2>
+    <form method="post" action="{{ url_for('recall_refresh') }}">
+      <button type="submit" class="btn btn-outline-primary btn-sm">Refresh</button>
+    </form>
+  </div>
+  <p class="text-muted small">
+    Practice recalling artists you'd want to recommend — built from your Last.fm listening
+    and your own playlists. The terminal has the same steps (<code>cli.py recall …</code>).
+  </p>
+
+  <div class="row g-2 small text-muted mb-4">
+    <div class="col-auto">Ready: <strong class="text-body">{{ stats.active_set }}</strong></div>
+    <div class="col-auto">Accepted links: <strong class="text-body">{{ stats.recommendations }}</strong></div>
+    <div class="col-auto">Suggestions waiting: <strong class="text-body">{{ stats.proposed }}</strong></div>
+    <div class="col-auto">Due now: <strong class="text-body">{{ stats.due_now }}</strong></div>
+    {% if stats.unassisted_recalls %}
+      <div class="col-auto">Recalled unassisted ({{ stats.window_days }}d): <strong class="text-body">{{ stats.unassisted_recalls|length }}</strong></div>
+    {% endif %}
+  </div>
+
+  <!-- Practice card -->
+  <div class="card mb-4">
+    <div class="card-body" id="practiceCard"
+         {% if practice %}
+           data-attempt-id="{{ practice.attempt_id }}"
+           data-session-id="{{ practice.session_id }}"
+           data-answered="{{ 'true' if practice.answered else 'false' }}"
+           data-kind="{{ practice.kind }}"
+           data-prompt="{{ practice.prompt }}"
+           data-position="{{ practice.position }}"
+           data-total="{{ practice.total }}"
+         {% endif %}>
+      {% if not practice %}
+        <h5 class="card-title">Practice</h5>
+        <p class="text-muted mb-2">Start a short practice session — a couple of prompts, hint/reveal if you're stuck, then rate how it felt.</p>
+        <button type="button" class="btn btn-primary btn-sm" id="practiceStartBtn">Start practice</button>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Note box -->
+  <div class="card mb-4">
+    <div class="card-body">
+      <h6 class="card-title">Remembered one in a real conversation?</h6>
+      <form method="post" action="{{ url_for('recall_note') }}" class="d-flex gap-2">
+        <input type="text" name="text" class="form-control form-control-sm" placeholder="e.g. brought up Hop Along when talking Mountain Goats with PJ" maxlength="500" required>
+        <button type="submit" class="btn btn-outline-secondary btn-sm">Log it</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Suggested links -->
+  {% if proposals %}
+    <h5>Suggested links <span class="text-muted fs-6">({{ proposals|length }})</span></h5>
+    <div class="list-group mb-4" id="proposalList">
+      {% for p in proposals %}
+        <div class="list-group-item d-flex justify-content-between align-items-center" data-link-id="{{ p.link_id }}">
+          <div>
+            <a href="{{ url_for('recall_artist', name=p.src) }}">{{ p.src }}</a>
+            &rarr;
+            <a href="{{ url_for('recall_artist', name=p.dst) }}">{{ p.dst }}</a>
+            <div class="text-muted small">{{ p.reason }}{% if p.confidence %} &middot; match {{ '%.2f'|format(p.confidence) }}{% endif %}</div>
+          </div>
+          <div class="btn-group btn-group-sm">
+            <button type="button" class="btn btn-outline-success link-state-btn" data-state="accepted">Accept</button>
+            <button type="button" class="btn btn-outline-danger link-state-btn" data-state="rejected">Reject</button>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  <!-- Ready-to-recommend set -->
+  <h5>Ready to recommend</h5>
+  {% if active %}
+    <div class="list-group mb-4">
+      {% for a in active %}
+        <div class="list-group-item">
+          <div class="d-flex justify-content-between align-items-start">
+            <div>
+              <a href="{{ url_for('recall_artist', name=a.name) }}" class="fw-semibold text-decoration-none">{{ a.name }}</a>
+              <span class="text-muted small">[{{ a.bucket }}{% if a.choice == 'pinned' %}, pinned{% endif %}]</span>
+              <div class="text-muted small">{{ a.why }}</div>
+              {% if a.hook %}
+                <div class="small">hook: {{ a.hook }}</div>
+              {% elif a.hook_suggested %}
+                <div class="small text-muted">hook: (suggested) {{ a.hook_suggested }}</div>
+              {% endif %}
+              {% for n in a.neighbors %}
+                <div class="small text-muted">?&rarr; {{ n.name }} ({{ n.origin }})</div>
+              {% endfor %}
+            </div>
+            <div class="btn-group btn-group-sm">
+              <form method="post" action="{{ url_for('recall_choice') }}">
+                <input type="hidden" name="name" value="{{ a.name }}">
+                <input type="hidden" name="choice" value="{{ 'clear' if a.choice == 'pinned' else 'pinned' }}">
+                <button type="submit" class="btn {{ 'btn-warning' if a.choice == 'pinned' else 'btn-outline-warning' }}">Pin</button>
+              </form>
+              <form method="post" action="{{ url_for('recall_choice') }}">
+                <input type="hidden" name="name" value="{{ a.name }}">
+                <input type="hidden" name="choice" value="snooze">
+                <button type="submit" class="btn btn-outline-secondary">Snooze</button>
+              </form>
+              <form method="post" action="{{ url_for('recall_choice') }}">
+                <input type="hidden" name="name" value="{{ a.name }}">
+                <input type="hidden" name="choice" value="dismissed">
+                <button type="submit" class="btn btn-outline-secondary">Dismiss</button>
+              </form>
+              <form method="post" action="{{ url_for('recall_choice') }}">
+                <input type="hidden" name="name" value="{{ a.name }}">
+                <input type="hidden" name="choice" value="nope">
+                <button type="submit" class="btn btn-outline-danger">Nope</button>
+              </form>
+            </div>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="text-muted">Nothing in the set yet — hit Refresh to pull from Last.fm + your playlists.</p>
+  {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const card = document.getElementById("practiceCard");
+  const startBtn = document.getElementById("practiceStartBtn");
+
+  function post(url, body) {
+    return fetch(url, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body || {}),
+    }).then(r => r.json());
+  }
+
+  function esc(s) {
+    const d = document.createElement("div");
+    d.textContent = s == null ? "" : s;
+    return d.innerHTML;
+  }
+
+  function renderNothing(info) {
+    if (info && info.has_items) {
+      card.innerHTML = `<h5 class="card-title">Practice</h5>
+        <p class="text-muted mb-2">Nothing due${info.next_due ? " (next up " + esc(info.next_due.slice(0,10)) + ")" : ""}.</p>
+        <button type="button" class="btn btn-outline-primary btn-sm" id="practiceFreshBtn">Practice anyway</button>`;
+      document.getElementById("practiceFreshBtn").addEventListener("click", () => startSession(true));
+    } else {
+      card.innerHTML = `<h5 class="card-title">Practice</h5>
+        <p class="text-muted mb-0">Nothing to practice yet — accept a suggestion below, add a link
+        from an artist page, or hit Refresh so there's a set to recall from.</p>`;
+    }
+  }
+
+  function startSession(fresh) {
+    post("/recall/practice/start", {fresh: !!fresh}).then(data => {
+      if (!data.session_id) { renderNothing(data); return; }
+      renderPrompt(data.prompt);
+    });
+  }
+
+  function renderPrompt(p) {
+    if (!p) { renderRecap({recalled: [], revisit: [], sentence: null}); return; }
+    card.dataset.attemptId = p.attempt_id;
+    card.dataset.sessionId = p.session_id;
+    card.innerHTML = `
+      <div class="d-flex justify-content-between align-items-baseline">
+        <h5 class="card-title mb-0">Practice <span class="text-muted fs-6">[${p.position}/${p.total}]</span></h5>
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="practiceStopBtn">Stop</button>
+      </div>
+      <p class="mt-2">${esc(p.prompt)}</p>
+      <div class="input-group input-group-sm mb-2" style="max-width: 32rem;">
+        <input type="text" class="form-control" id="practiceAnswer" placeholder="Answer in your own words — commas between names" autocomplete="off">
+        <button class="btn btn-outline-secondary" type="button" id="practiceHintBtn">Hint</button>
+        <button class="btn btn-outline-secondary" type="button" id="practiceRevealBtn">Reveal</button>
+        <button class="btn btn-primary" type="button" id="practiceSubmitBtn">Submit</button>
+      </div>
+      <div class="small text-muted" id="practiceHint"></div>`;
+    document.getElementById("practiceHintBtn").addEventListener("click", () => {
+      post("/recall/practice/hint", {attempt_id: p.attempt_id}).then(d => {
+        document.getElementById("practiceHint").textContent = d.hint || d.error || "";
+      });
+    });
+    document.getElementById("practiceRevealBtn").addEventListener("click", () => {
+      post("/recall/practice/reveal", {attempt_id: p.attempt_id}).then(renderFeedback);
+    });
+    document.getElementById("practiceSubmitBtn").addEventListener("click", submitAnswer);
+    document.getElementById("practiceAnswer").addEventListener("keydown", e => {
+      if (e.key === "Enter") submitAnswer();
+    });
+    document.getElementById("practiceStopBtn").addEventListener("click", () => {
+      post("/recall/practice/end", {}).then(renderRecap);
+    });
+    document.getElementById("practiceAnswer").focus();
+  }
+
+  function submitAnswer() {
+    const attemptId = parseInt(card.dataset.attemptId, 10);
+    const answer = document.getElementById("practiceAnswer").value;
+    post("/recall/practice/submit", {attempt_id: attemptId, answer: answer}).then(renderFeedback);
+  }
+
+  const MARKS = {exact: "&#10003;", alias: "&#10003;", loose: "&#10003;", spelling: "~",
+                 ambiguous: "?", unknown: "+"};
+
+  function renderFeedback(fb) {
+    if (fb.error) { document.getElementById("practiceHint").textContent = fb.error; return; }
+    let html = `<h5 class="card-title mb-2">Practice <span class="text-muted fs-6">${esc(fb.kind)}</span></h5>
+      <p>${esc(fb.prompt)}</p>`;
+    (fb.resolved || []).forEach(r => {
+      if (r.how === "ambiguous") {
+        html += `<div class="small">? &#8220;${esc(r.text)}&#8221; could be ${esc((r.options||[]).join(" / "))} — not counted; use the exact name</div>`;
+      } else if (r.how === "unknown") {
+        html += `<div class="small">+ &#8220;${esc(r.text)}&#8221; — not in Crate yet
+          <button type="button" class="btn btn-link btn-sm p-0 align-baseline add-link-btn" data-name="${esc(r.text)}" ${fb.cue ? "" : "hidden"}>add as a recommendation${fb.cue ? " for " + esc(fb.cue) : ""}?</button></div>`;
+      } else {
+        const spelled = r.how === "spelling" ? ` (from &#8220;${esc(r.text)}&#8221;)` : "";
+        const where = r.expected ? "&#10003; on your list" : (r.in_active_set ? "in your set" : "known to Crate");
+        html += `<div class="small">${MARKS[r.how] || "&#183;"} ${esc(r.name)}${spelled} — ${where}
+          ${r.how === "spelling" ? `<button type="button" class="btn btn-link btn-sm p-0 align-baseline alias-btn" data-alias="${esc(r.text)}" data-name="${esc(r.name)}">remember this spelling?</button>` : ""}</div>`;
+      }
+    });
+    if ((fb.expected || []).length) {
+      html += `<div class="small mt-2">Your list:</div>`;
+      fb.expected.slice(0, 8).forEach(e => {
+        html += `<div class="small">${e.hit ? "&#10003;" : "&#183;"} ${esc(e.name)} — ${esc(e.reason)}</div>`;
+      });
+      if (fb.expected.length > 8) html += `<div class="small text-muted">… and ${fb.expected.length - 8} more</div>`;
+    }
+    if ((fb.suggestions || []).length) {
+      html += `<div class="small mt-2">Also suggested (examples, not an answer key):</div>`;
+      fb.suggestions.forEach(s => {
+        html += `<div class="small">?&rarr; ${esc(s.name)} — ${esc(s.reason)}
+          <button type="button" class="btn btn-link btn-sm p-0 align-baseline link-state-btn" data-link-id="${s.link_id}" data-state="accepted">keep</button> /
+          <button type="button" class="btn btn-link btn-sm p-0 align-baseline link-state-btn" data-link-id="${s.link_id}" data-state="rejected">drop</button></div>`;
+      });
+    }
+    if (fb.sentence) html += `<p class="mt-2 fst-italic">Try saying: &#8220;${esc(fb.sentence)}&#8221;</p>`;
+    html += `<div class="mt-2">
+      <span class="small text-muted">How did that feel?</span>
+      <div class="btn-group btn-group-sm ms-2">
+        <button type="button" class="btn btn-outline-success rate-btn" data-rating="easy">Came easily</button>
+        <button type="button" class="btn btn-outline-warning rate-btn" data-rating="moment">Took a moment</button>
+        <button type="button" class="btn btn-outline-danger rate-btn" data-rating="couldnt">Couldn't recall</button>
+      </div>
+    </div>`;
+    card.innerHTML = html;
+
+    card.querySelectorAll(".alias-btn").forEach(b => b.addEventListener("click", () => {
+      post("/recall/curate/alias", {alias: b.dataset.alias, name: b.dataset.name})
+        .then(() => { b.textContent = "remembered"; b.disabled = true; });
+    }));
+    card.querySelectorAll(".add-link-btn").forEach(b => b.addEventListener("click", () => {
+      post("/recall/curate/link", {src: fb.cue, dst: b.dataset.name})
+        .then(() => { b.textContent = "added"; b.disabled = true; });
+    }));
+    card.querySelectorAll(".link-state-btn").forEach(b => b.addEventListener("click", () => {
+      post("/recall/curate/link-state", {link_id: parseInt(b.dataset.linkId, 10), state: b.dataset.state})
+        .then(() => { b.parentElement.querySelectorAll(".link-state-btn").forEach(x => x.disabled = true); });
+    }));
+    card.querySelectorAll(".rate-btn").forEach(b => b.addEventListener("click", () => {
+      const attemptId = parseInt(card.dataset.attemptId, 10);
+      post("/recall/practice/rate", {attempt_id: attemptId, rating: b.dataset.rating}).then(d => {
+        if (d.error) return;
+        if (d.next) renderPrompt(d.next);
+        else post("/recall/practice/end", {}).then(renderRecap);
+      });
+    }));
+  }
+
+  function renderRecap(recap) {
+    let html = `<h5 class="card-title">Recap</h5>`;
+    html += `<div class="small">Recalled: ${(recap.recalled && recap.recalled.length) ? esc(recap.recalled.join(", ")) : "nothing this time — that's fine, it's practice"}</div>`;
+    (recap.revisit || []).forEach(r => { html += `<div class="small">Worth revisiting: ${esc(r)}</div>`; });
+    if (recap.sentence) html += `<p class="mt-2 fst-italic">Ready to say: &#8220;${esc(recap.sentence)}&#8221;</p>`;
+    html += `<button type="button" class="btn btn-outline-primary btn-sm mt-2" id="practiceAgainBtn">Practice again</button>`;
+    card.innerHTML = html;
+    delete card.dataset.attemptId;
+    delete card.dataset.sessionId;
+    document.getElementById("practiceAgainBtn").addEventListener("click", () => startSession(false));
+  }
+
+  // ---- boot ----
+  if (startBtn) {
+    startBtn.addEventListener("click", () => startSession(false));
+  } else if (card.dataset.sessionId) {
+    // Resume: the server rendered only prompt/position/total — no answers. If this
+    // attempt was already answered before the reload, reveal() is a safe no-op read
+    // (it only mutates when nothing was submitted yet) so it just replays the feedback.
+    const p = {
+      attempt_id: parseInt(card.dataset.attemptId, 10),
+      session_id: parseInt(card.dataset.sessionId, 10),
+      kind: card.dataset.kind, prompt: card.dataset.prompt,
+      position: parseInt(card.dataset.position, 10), total: parseInt(card.dataset.total, 10),
+    };
+    if (card.dataset.answered === "true") {
+      post("/recall/practice/reveal", {attempt_id: p.attempt_id}).then(renderFeedback);
+    } else {
+      renderPrompt(p);
+    }
+  }
+
+  // Suggested-links list accept/reject (outside the practice card)
+  document.getElementById("proposalList")?.addEventListener("click", e => {
+    const btn = e.target.closest(".link-state-btn");
+    if (!btn) return;
+    const row = btn.closest("[data-link-id]");
+    post("/recall/curate/link-state", {link_id: parseInt(row.dataset.linkId, 10), state: btn.dataset.state})
+      .then(d => { if (!d.error) row.remove(); });
+  });
+})();
+</script>
+{% endblock %}

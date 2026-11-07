@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+
+{% block title %}{{ art.name }} — Recall{% endblock %}
+
+{% block content %}
+  <p><a href="{{ url_for('recall_dashboard') }}" class="text-muted small">&larr; Recall</a></p>
+  <div class="d-flex justify-content-between align-items-baseline mb-2">
+    <h2 class="mb-0">{{ art.name }}</h2>
+    <div>
+      {% if art.active %}<span class="badge bg-success">in set{% if art.choice == 'pinned' %} &middot; pinned{% endif %}</span>{% endif %}
+      {% if art.choice == 'dismissed' %}<span class="badge bg-secondary">dismissed</span>{% endif %}
+      {% if art.choice == 'nope' %}<span class="badge bg-danger">nope</span>{% endif %}
+      {% if art.snoozed_until %}<span class="badge bg-info text-dark">snoozed until {{ art.snoozed_until[:10] }}</span>{% endif %}
+    </div>
+  </div>
+  <p class="text-muted small">
+    {{ art.origin }}{% if art.bucket %} &middot; {{ art.bucket }}{% endif %}
+    {% if art.listeners %} &middot; {{ "{:,}".format(art.listeners) }} listeners{% endif %}
+  </p>
+
+  {% if art.reasons %}
+    <ul class="small text-muted">
+      {% for r in art.reasons %}<li>{{ r }}</li>{% endfor %}
+    </ul>
+  {% endif %}
+
+  <!-- Hook -->
+  <div class="card mb-4">
+    <div class="card-body">
+      <h6 class="card-title">Hook <span class="text-muted small">one line you'd say about them</span></h6>
+      {% if art.hook %}
+        <p>{{ art.hook }}</p>
+      {% elif art.hook_suggested %}
+        <p class="text-muted">(suggested) {{ art.hook_suggested }}</p>
+      {% endif %}
+      <form method="post" action="{{ url_for('recall_artist_hook', name=art.name) }}" class="d-flex gap-2">
+        <input type="text" name="hook" class="form-control form-control-sm" maxlength="200"
+               placeholder="e.g. the one with the brass section" value="{{ art.hook or '' }}">
+        <button type="submit" class="btn btn-outline-secondary btn-sm">Save</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Curation -->
+  <div class="card mb-4">
+    <div class="card-body">
+      <h6 class="card-title">Curate</h6>
+      <div class="btn-group btn-group-sm mb-2">
+        <form method="post" action="{{ url_for('recall_choice') }}">
+          <input type="hidden" name="name" value="{{ art.name }}">
+          <input type="hidden" name="choice" value="{{ 'clear' if art.choice == 'pinned' else 'pinned' }}">
+          <input type="hidden" name="next" value="{{ url_for('recall_artist', name=art.name) }}">
+          <button type="submit" class="btn {{ 'btn-warning' if art.choice == 'pinned' else 'btn-outline-warning' }}">Pin</button>
+        </form>
+        <form method="post" action="{{ url_for('recall_choice') }}">
+          <input type="hidden" name="name" value="{{ art.name }}">
+          <input type="hidden" name="choice" value="snooze">
+          <input type="hidden" name="next" value="{{ url_for('recall_artist', name=art.name) }}">
+          <button type="submit" class="btn btn-outline-secondary">Snooze</button>
+        </form>
+        <form method="post" action="{{ url_for('recall_choice') }}">
+          <input type="hidden" name="name" value="{{ art.name }}">
+          <input type="hidden" name="choice" value="dismissed">
+          <input type="hidden" name="next" value="{{ url_for('recall_artist', name=art.name) }}">
+          <button type="submit" class="btn btn-outline-secondary">Dismiss</button>
+        </form>
+        <form method="post" action="{{ url_for('recall_choice') }}">
+          <input type="hidden" name="name" value="{{ art.name }}">
+          <input type="hidden" name="choice" value="nope">
+          <input type="hidden" name="next" value="{{ url_for('recall_artist', name=art.name) }}">
+          <button type="submit" class="btn btn-outline-danger">Nope</button>
+        </form>
+        <form method="post" action="{{ url_for('recall_choice') }}">
+          <input type="hidden" name="name" value="{{ art.name }}">
+          <input type="hidden" name="choice" value="clear">
+          <input type="hidden" name="next" value="{{ url_for('recall_artist', name=art.name) }}">
+          <button type="submit" class="btn btn-outline-secondary">Clear</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Links out -->
+  <div class="card mb-4">
+    <div class="card-body">
+      <h6 class="card-title">When {{ art.name }} comes up, recommend&hellip;</h6>
+      {% if art.links_out %}
+        <ul class="list-unstyled mb-2">
+          {% for l in art.links_out %}
+            <li class="d-flex justify-content-between align-items-center py-1 border-bottom">
+              <span>
+                <a href="{{ url_for('recall_artist', name=l.name) }}">{{ l.name }}</a>
+                <span class="text-muted small">[{{ l.origin }}{% if l.state == 'proposed' %}, proposed{% endif %}]</span>
+                {% if l.reason %}<div class="text-muted small">{{ l.reason }}</div>{% endif %}
+              </span>
+              <form method="post" action="{{ url_for('recall_artist_unlink', name=art.name) }}">
+                <input type="hidden" name="dst" value="{{ l.name }}">
+                <button type="submit" class="btn btn-outline-danger btn-sm">Unlink</button>
+              </form>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="text-muted small mb-2">No links yet.</p>
+      {% endif %}
+      <form method="post" action="{{ url_for('recall_artist_link', name=art.name) }}" class="row g-2">
+        <div class="col-md-4"><input type="text" name="dst" class="form-control form-control-sm" placeholder="artist name" required></div>
+        <div class="col-md-6"><input type="text" name="reason" class="form-control form-control-sm" placeholder="reason (optional)"></div>
+        <div class="col-md-2"><button type="submit" class="btn btn-outline-primary btn-sm w-100">Add link</button></div>
+      </form>
+      {% if art.rejected %}
+        <p class="text-muted small mt-2 mb-0">Rejected: {{ art.rejected|join(', ') }}</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Links in -->
+  {% if art.links_in %}
+    <div class="card mb-4">
+      <div class="card-body">
+        <h6 class="card-title">Recommended when these come up</h6>
+        <ul class="list-unstyled mb-0">
+          {% for l in art.links_in %}
+            <li class="py-1 border-bottom">
+              <a href="{{ url_for('recall_artist', name=l.name) }}">{{ l.name }}</a>
+              <span class="text-muted small">[{{ l.origin }}{% if l.state == 'proposed' %}, proposed{% endif %}]</span>
+              {% if l.reason %}<div class="text-muted small">{{ l.reason }}</div>{% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      </div>
+    </div>
+  {% endif %}
+
+  <!-- Contexts -->
+  <div class="card mb-4">
+    <div class="card-body">
+      <h6 class="card-title">Conversation contexts</h6>
+      {% if art.contexts %}
+        <ul class="list-unstyled mb-2">
+          {% for c in art.contexts %}
+            <li class="d-flex justify-content-between align-items-center py-1 border-bottom">
+              <span>{{ c }}</span>
+              <form method="post" action="{{ url_for('recall_artist_context', name=art.name) }}">
+                <input type="hidden" name="context" value="{{ c }}">
+                <input type="hidden" name="remove" value="1">
+                <button type="submit" class="btn btn-outline-danger btn-sm">Remove</button>
+              </form>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="text-muted small mb-2">Not filed under any context.</p>
+      {% endif %}
+      <form method="post" action="{{ url_for('recall_artist_context', name=art.name) }}" class="d-flex gap-2">
+        <input type="text" name="context" class="form-control form-control-sm" placeholder="e.g. new discoveries" required>
+        <button type="submit" class="btn btn-outline-primary btn-sm">File</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Aliases -->
+  <div class="card mb-4">
+    <div class="card-body">
+      <h6 class="card-title">Spellings</h6>
+      {% if art.aliases %}
+        <p class="small">{{ art.aliases|join(', ') }}</p>
+      {% else %}
+        <p class="text-muted small">No alternate spellings recorded.</p>
+      {% endif %}
+      <form method="post" action="{{ url_for('recall_artist_alias', name=art.name) }}" class="d-flex gap-2">
+        <input type="text" name="alias" class="form-control form-control-sm" placeholder="another spelling" required>
+        <button type="submit" class="btn btn-outline-secondary btn-sm">Add</button>
+      </form>
+    </div>
+  </div>
+{% endblock %}
