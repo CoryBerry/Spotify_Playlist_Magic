@@ -58,6 +58,9 @@ def _day(ts):
 @_run
 def cmd_refresh(args):
     conn = _conn(args)
+    if rs.refresh_will_be_slow(conn):
+        print("Refreshing — this run looks up Last.fm listener counts, so it takes about "
+              "2 minutes. Later refreshes reuse them.", file=sys.stderr, flush=True)
     rep = rs.run_refresh(conn, use_similar=not args.no_similar)
 
     def human(r):

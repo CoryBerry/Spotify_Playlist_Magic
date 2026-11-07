@@ -2127,6 +2127,7 @@ def recall_dashboard():
         proposals=rs.proposed_links(conn),
         stats=rs.stats(conn),
         practice=_recall_current_prompt(conn),
+        refresh_slow=rs.refresh_will_be_slow(conn),
     )
 
 

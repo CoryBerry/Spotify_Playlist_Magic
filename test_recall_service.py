@@ -130,7 +130,9 @@ def test_candidates_need_spread_and_carry_real_counts():
     assert "binge band" not in c                           # one intense week ≠ familiarity
     assert c["hop along"]["bucket"] == "recent"
     assert c["hop along"]["counts"]["weeks_recent"] == 4
-    assert any("4 of the last 4 weeks (20 plays)" in r for r in c["hop along"]["reasons"])
+    assert any("into them lately: played in 4 of the last 4 weeks (20 plays, new to you)" in r
+               for r in c["hop along"]["reasons"])
+    assert c["remember sports"]["bucket"] == "developing"  # every week, but no lift: steady, not lately
     assert c["waxahatchee"]["bucket"] == "developing"
     assert c["modest mouse"]["bucket"] == "anchor"
     assert c["remember sports"]["playlists"] == ["Chill Indie", "Indie SELECTS", "Road Trip"]
@@ -427,3 +429,117 @@ def test_rotated_out_artists_sit_out_before_returning(conn):
     assert out and not out & set(rep["active"]["added"])
     rep2 = rs.refresh(conn, _listening(), _playlists(), T0 + timedelta(days=61))
     assert not out & set(rep2["active"]["added"])
+
+
+# ----------------------------------------------------------------- tuning (#32)
+
+def test_recent_means_into_them_lately_not_just_played():
+    cfg = {k: v[0] for k, v in rs.SETTINGS.items()}
+
+    def week(i):
+        w = {"Steady": 6, "Picked Up": 1 if i < 9 else 6}
+        if i >= 9:
+            w["Background"] = 1                              # every recent week, but 4 plays total
+        if i in (10, 12):
+            w["Two Weeks"] = 8                               # plenty of plays, only 2 of 4 weeks
+        return w
+    c = rs.compute_candidates(rs.Listening(weeks=_weeks(13, week)), rs.Playlists(), cfg)
+    assert c["picked up"]["bucket"] == "recent"
+    assert any("6.0× your usual rate" in r for r in c["picked up"]["reasons"])
+    assert c["steady"]["bucket"] == "developing"
+    assert c.get("background", {}).get("bucket") != "recent"
+    assert c.get("two weeks", {}).get("bucket") != "recent"
+
+    cfg["recent_lift_pct"] = 100                             # lift off → steady listening counts
+    c = rs.compute_candidates(rs.Listening(weeks=_weeks(13, week)), rs.Playlists(), cfg)
+    assert c["steady"]["bucket"] == "recent"
+
+
+def test_year_end_and_decade_pools_are_weak_link_evidence(conn):
+    _set_size(conn, 4)
+    annual = lambda i: {"name": f"20{i}: My Spotify Top 100", "tags": ["annual"],
+                        "artists": ["Remember Sports", "Hop Along"]}
+    pls = rs.Playlists(pools={**_playlists().pools, **{f"y{i}": annual(i) for i in range(17, 20)}})
+    rs.refresh(conn, _listening(), pls, T0)
+    pairs = {frozenset((p["src"], p["dst"])): p for p in rs.proposed_links(conn) if p["origin"] == "data"}
+    # 1 real shared playlist + 3 year-end lists (3 × 0.25) — unweighted that's 4 shared; weighted
+    # it's under the bar of two real ones
+    assert frozenset(("Remember Sports", "Hop Along")) not in pairs
+    rs_lg = pairs[frozenset(("Remember Sports", "Lime Garden"))]
+    assert "3 of your playlists" in rs_lg["reason"] and "year/decade" not in rs_lg["reason"]
+
+    pls.pools["p3"]["artists"].append("Hop Along")          # a second real shared playlist
+    rs.refresh(conn, _listening(), pls, T0 + timedelta(hours=1))
+    pairs = {frozenset((p["src"], p["dst"])): p for p in rs.proposed_links(conn) if p["origin"] == "data"}
+    hop = pairs[frozenset(("Remember Sports", "Hop Along"))]
+    assert "2 of your playlists" in hop["reason"] and "also 3 year/decade lists (weak evidence)" in hop["reason"]
+
+
+def test_unsupported_data_proposals_are_withdrawn_but_decisions_stay(conn):
+    _set_size(conn, 4)
+    rs.refresh(conn, _listening(), _playlists(), T0)
+    data = lambda: [p for p in rs.proposed_links(conn) if p["origin"] == "data"]  # noqa: E731
+    only_p1 = rs.Playlists(pools={"p1": _playlists().pools["p1"]})
+    assert data()
+    rs.refresh(conn, _listening(), only_p1, T0 + timedelta(hours=1))
+    assert not data()                                        # evidence gone → proposal withdrawn
+
+    rs.refresh(conn, _listening(), _playlists(), T0 + timedelta(hours=2))
+    link_id = data()[0]["link_id"]
+    rs.set_link_state_by_id(conn, link_id, "rejected", T0)
+    rs.refresh(conn, _listening(), only_p1, T0 + timedelta(hours=3))
+    assert conn.execute("SELECT state FROM recall_link WHERE id=?", (link_id,)).fetchone()[0] == "rejected"
+
+
+def test_nomix_pools_are_not_link_or_familiarity_evidence(conn, tmp_path):
+    conn.executescript("""
+        CREATE TABLE playlist_cache (data TEXT);
+        CREATE TABLE playlist_tag (playlist_id TEXT, tag TEXT);
+        CREATE TABLE created_playlist (playlist_id TEXT);
+    """)
+    me = {"id": "cory"}
+    conn.execute("INSERT INTO playlist_cache VALUES (?)", (json.dumps(
+        [{"id": "a", "name": "Indie SELECTS", "owner": me},
+         {"id": "b", "name": "Top Tracks (Last 30 days)", "owner": me}]),))
+    conn.executemany("INSERT INTO playlist_tag VALUES (?, ?)", [("a", "selects"), ("b", "nomix")])
+    for pid in "ab":
+        (tmp_path / f"{pid}.json").write_text(json.dumps({"tracks": [{"artist": "Hop Along"}]}))
+    pls = rs.load_playlists(conn, str(tmp_path))
+    assert list(pls.pools) == ["a"] and pls.pools["a"]["tags"] == ["selects"]
+
+
+def test_listener_lookup_never_trusts_an_autocorrect_to_another_act():
+    lastfm = {("Ratboys", False): {"name": "Ratboys", "listeners": 200621},
+              ("Ratboys", True): {"name": "Ratboy", "listeners": 2788},
+              ("Rat Boys", False): None,
+              ("Rat Boys", True): {"name": "Ratboy", "listeners": 2788},
+              ("the national", False): None,
+              ("the national", True): {"name": "The National", "listeners": 3000000}}
+    info = lambda name, autocorrect: lastfm[(name, autocorrect)]
+    assert rs.lookup_listeners("Ratboys", info) == 200621
+    assert rs.lookup_listeners("Rat Boys", info) is None         # corrected to someone else
+    assert rs.lookup_listeners("the national", info) == 3000000  # same name, just cased
+
+
+def test_stale_listener_counts_are_refetched_and_rechecked(conn):
+    _set_size(conn, 4)
+    assert rs.refresh_will_be_slow(conn)                     # empty set: first refresh is the slow one
+    rs.refresh(conn, _listening(), _playlists(), T0)
+    assert not rs.refresh_will_be_slow(conn)
+    members = {a["name"] for a in rs.list_active(conn, T0)}
+    conn.execute("UPDATE recall_artist SET listeners=2788")  # counts from the old autocorrect lookup
+    conn.execute("UPDATE recall_settings SET value='1' WHERE key='listeners_rev'")
+    victim = sorted(members)[0]
+    fetched = {}
+
+    def listeners(name):
+        fetched[name] = 5_000_000 if name == victim else 5000
+        return fetched[name]
+    rep = rs.refresh(conn, _listening(), _playlists(), T0 + timedelta(hours=1), listeners_fn=listeners)
+    assert members <= set(fetched)                           # every member re-checked
+    assert victim in rep["active"]["retired"] and victim in rep["active"]["skipped_famous"]
+    assert not conn.execute("SELECT 1 FROM recall_artist WHERE listeners=2788").fetchone()
+
+    fetched.clear()                                          # next refresh reuses the fresh counts
+    rs.refresh(conn, _listening(), _playlists(), T0 + timedelta(hours=2), listeners_fn=listeners)
+    assert not set(fetched) & (members - {victim})

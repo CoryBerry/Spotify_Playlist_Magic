@@ -55,6 +55,9 @@ SETTINGS = {
     "set_size":         (30, 15, 50),   # ready-to-recommend set size
     "rotate_days":      (28, 7, 365),   # a non-pinned member may rotate out after this long
     "recent_weeks":     (4, 2, 8),      # "recent interest" window, in chart weeks
+    "recent_min_weeks": (3, 1, 8),      # …of which this many must have plays (capped at recent_weeks)
+    "recent_min_plays": (5, 1, 500),    # …with at least this many plays across them
+    "recent_lift_pct":  (150, 100, 1000),  # …at this % of the artist's earlier weekly rate (100 = off)
     "window_weeks":     (13, 4, 52),    # "developing familiarity" window
     "min_weeks":        (3, 2, 13),     # weeks-with-plays needed to count as familiar
     "anchor_min_plays": (100, 20, 10000),  # all-time plays for an "established anchor"
@@ -65,6 +68,15 @@ SETTINGS = {
     "snooze_days":      (30, 1, 365),
 }
 DEFAULT_LADDER = "3,7,14,30"   # days between successful unassisted recalls
+
+# Own-playlist tags (the mix skill's tiers, on playlist_tag) that make weak *link* evidence:
+# a year-end "My Spotify Top 100" or a broad "Albums - 2020s" pool puts artists side by side
+# because they shared a year, not a sound. They still count toward familiarity.
+WEAK_LINK_TAGS = ("annual", "decade", "rotation")
+WEAK_LINK_WEIGHT = 0.25
+# Bump to discard every cached Last.fm listener count on the next refresh (rev 2: counts
+# fetched with autocorrect=1 could belong to a different act — Ratboys → "Ratboy").
+LISTENERS_REV = "2"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS recall_artist (
@@ -437,7 +449,7 @@ class Listening:
 
 @dataclass
 class Playlists:
-    """Cory's own playlists, from the local track cache: {playlist_id: {name, artists: [str]}}."""
+    """Cory's own playlists, from the local track cache: {playlist_id: {name, artists: [str], tags}}."""
     pools: dict = field(default_factory=dict)
     note: str = ""
 
@@ -488,12 +500,20 @@ def load_playlists(conn, cache_dir: str = DEFAULT_MIX_CACHE) -> Playlists:
     except sqlite3.Error:
         generated = set()
     by_id = {p["id"]: p for p in listing if p.get("id")}
+    tags: dict[str, set] = {}
+    try:
+        for pid, tag in conn.execute("SELECT playlist_id, tag FROM playlist_tag"):
+            tags.setdefault(pid, set()).add(tag)
+    except sqlite3.Error:
+        pass
 
     pools = {}
     for path in sorted(glob.glob(os.path.join(cache_dir, "*.json"))):
         pid = os.path.splitext(os.path.basename(path))[0]
         meta = by_id.get(pid)
         if not meta or pid in generated or (meta.get("owner") or {}).get("id") != me:
+            continue
+        if "nomix" in tags.get(pid, ()):  # past outputs and provider stat-mirrors, not his picks
             continue
         try:
             with open(path, encoding="utf-8") as fh:
@@ -504,7 +524,8 @@ def load_playlists(conn, cache_dir: str = DEFAULT_MIX_CACHE) -> Playlists:
             continue
         artists = [t.get("artist", "") for t in blob.get("tracks") or [] if t.get("artist")]
         if artists:
-            pools[pid] = {"name": meta.get("name") or pid, "artists": artists}
+            pools[pid] = {"name": meta.get("name") or pid, "artists": artists,
+                          "tags": sorted(tags.get(pid, ()))}
     note = "" if pools else "no track lists cached for your own playlists yet (build a mix once)"
     return Playlists(pools=pools, note=note)
 
@@ -537,6 +558,10 @@ def compute_candidates(listening: Optional[Listening], playlists: Playlists, cfg
 
     Familiarity needs *spread*: several distinct weeks, a big all-time count, or several of
     his own playlists. One intense week alone never qualifies — a fresh import isn't knowledge.
+
+    "Recent" means *into them lately*, not merely played lately: ~600 artists get a play in a
+    typical week, so weeks-with-plays alone saturates. It needs most of the recent weeks, a
+    minimum play count across them, and a weekly rate above the artist's own earlier baseline.
     """
     known: dict[str, str] = {}
     weeks = listening.weeks if listening else []
@@ -591,7 +616,18 @@ def compute_candidates(listening: Optional[Listening], playlists: Playlists, cfg
     for n, c in per.items():
         n_pl = len(c["playlists"])
         reasons = []
-        if c["weeks_recent"] >= 2:
+        base_weeks = W - R
+        base_rate = (c["plays_window"] - c["plays_recent"]) / base_weeks if base_weeks else 0.0
+        recent_rate = c["plays_recent"] / R if R else 0.0
+        lifted = recent_rate * 100 >= cfg["recent_lift_pct"] * base_rate
+        is_recent = (R > 0 and c["weeks_recent"] >= min(cfg["recent_min_weeks"], R)
+                     and c["plays_recent"] >= cfg["recent_min_plays"] and lifted)
+        if is_recent:
+            lift = (f", {recent_rate / base_rate:.1f}× your usual rate" if base_rate
+                    else ", new to you")
+            reasons.append(f"into them lately: played in {c['weeks_recent']} of the last {R} weeks"
+                           f" ({c['plays_recent']} plays{lift})")
+        elif c["weeks_recent"] >= 2:
             reasons.append(f"played in {c['weeks_recent']} of the last {R} weeks ({c['plays_recent']} plays)")
         if c["weeks_window"] >= cfg["min_weeks"]:
             reasons.append(f"played in {c['weeks_window']} of the last {W} weeks")
@@ -605,7 +641,7 @@ def compute_candidates(listening: Optional[Listening], playlists: Playlists, cfg
         if c["loved"]:
             reasons.append(f"{c['loved']} loved track{'s' if c['loved'] > 1 else ''}")
 
-        if c["weeks_recent"] >= 2 and c["weeks_window"] >= cfg["min_weeks"] - 1:
+        if is_recent:
             bucket = "recent"
         elif c["weeks_window"] >= cfg["min_weeks"]:
             bucket = "developing"
@@ -651,6 +687,7 @@ def refresh(conn, listening: Optional[Listening], playlists: Playlists,
     now = _now(now)
     cfg = all_settings(conn)
     seeded = seed_starter(conn, now)
+    _expire_listeners(conn)
     cands = compute_candidates(listening, playlists, cfg)
 
     # 1. Upsert candidate rows (refresh-owned columns only).
@@ -704,6 +741,22 @@ def refresh(conn, listening: Optional[Listening], playlists: Playlists,
     return report
 
 
+def refresh_will_be_slow(conn) -> bool:
+    """True before the first refresh: filling an empty set means a Last.fm listener lookup per
+    pick (plus every household name it skips on the way) — about 2 minutes. Later refreshes
+    only top up a few rotated-out slots."""
+    return not conn.execute("SELECT 1 FROM recall_active WHERE retired_at IS NULL LIMIT 1").fetchone()
+
+
+def _expire_listeners(conn) -> None:
+    row = conn.execute("SELECT value FROM recall_settings WHERE key='listeners_rev'").fetchone()
+    if row and row["value"] == LISTENERS_REV:
+        return
+    conn.execute("UPDATE recall_artist SET listeners=NULL")
+    conn.execute("INSERT INTO recall_settings (key, value) VALUES ('listeners_rev', ?) "
+                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (LISTENERS_REV,))
+
+
 def _explain_empty(conn, report: dict, now: datetime) -> str:
     if report["active"]["size"]:
         return ""
@@ -736,9 +789,29 @@ def _rotate_active(conn, cfg: dict, now: datetime, listeners_fn=None) -> dict:
         r = rows.get(aid)
         return r is not None and _eligible_now(r, now) and (r["bucket"] or r["choice"] == "pinned")
 
+    famous: list[str] = []
+
+    def too_famous(r) -> bool:
+        n = r["listeners"]
+        if n is None and listeners_fn:
+            try:
+                n = listeners_fn(r["name"])
+            except Exception:
+                n = None
+            if n is not None:
+                conn.execute("UPDATE recall_artist SET listeners=? WHERE id=?", (n, r["id"]))
+        if n is not None and n >= cfg["famous_listeners"]:
+            famous.append(r["name"])
+            return True
+        return False
+
     retired, kept = [], []
     for m in members:
-        (kept if ok(m["artist_id"]) else retired).append(m)
+        r = rows.get(m["artist_id"])
+        # A member whose count was never fetched (or was discarded as untrustworthy) gets
+        # checked now; one that turns out to be a household name leaves unless pinned.
+        unfamous = r is None or r["choice"] == "pinned" or r["listeners"] is not None or not too_famous(r)
+        (kept if ok(m["artist_id"]) and unfamous else retired).append(m)
     # Stagger rotation: at most a quarter of the set ages out per refresh, oldest first.
     aged = sorted((m for m in kept if rows[m["artist_id"]]["choice"] != "pinned"
                    and now - _dt(m["selected_at"]) > rotate), key=lambda m: m["selected_at"])
@@ -758,21 +831,7 @@ def _rotate_active(conn, cfg: dict, now: datetime, listeners_fn=None) -> dict:
     have = {m["artist_id"] for m in kept}
     recently_retired = {m["artist_id"] for m in retired} | {r[0] for r in conn.execute(
         "SELECT artist_id FROM recall_active WHERE retired_at > ?", (_ts(now - rotate),))}
-    added, famous = [], []
-
-    def too_famous(r) -> bool:
-        n = r["listeners"]
-        if n is None and listeners_fn:
-            try:
-                n = listeners_fn(r["name"])
-            except Exception:
-                n = None
-            if n is not None:
-                conn.execute("UPDATE recall_artist SET listeners=? WHERE id=?", (n, r["id"]))
-        if n is not None and n >= cfg["famous_listeners"]:
-            famous.append(r["name"])
-            return True
-        return False
+    added = []
 
     def add(aid, why):
         r = rows[aid]
@@ -805,12 +864,23 @@ def _rotate_active(conn, cfg: dict, now: datetime, listeners_fn=None) -> dict:
             "retired": [rows[m["artist_id"]]["name"] for m in retired if m["artist_id"] in rows]}
 
 
+def _link_weight(pool: dict) -> float:
+    return WEAK_LINK_WEIGHT if set(pool.get("tags") or ()) & set(WEAK_LINK_TAGS) else 1.0
+
+
 def _propose_links(conn, playlists: Playlists, similar_fn, now: datetime) -> int:
     """Up to 3 data neighbors (shared own-playlist placement) + 2 inferred (Last.fm similar)
-    per active member, restricted to artists Cory already knows. Proposals only."""
+    per active member, restricted to artists Cory already knows. Proposals only.
+
+    Shared placement is weighted: a year-end or decade pool (``WEAK_LINK_TAGS``) counts a
+    quarter as much as a playlist he built around a sound, and a pair needs the equivalent of
+    two real shared playlists. Open data proposals the evidence no longer supports are
+    withdrawn; accepted and rejected links are never touched.
+    """
     universe = {r["norm"]: r for r in conn.execute(
         "SELECT id, name, norm FROM recall_artist WHERE bucket IS NOT NULL").fetchall()}
     known = {n: r["name"] for n, r in universe.items()}
+    weight = {pid: _link_weight(pool) for pid, pool in playlists.pools.items()}
     sets: dict[str, set] = {}
     for pid, pool in playlists.pools.items():
         credited = set()
@@ -820,22 +890,34 @@ def _propose_links(conn, playlists: Playlists, similar_fn, now: datetime) -> int
             sets.setdefault(n, set()).add(pid)
     members = conn.execute("SELECT a.id, a.name, a.norm FROM recall_active m JOIN recall_artist a "
                            "ON a.id=m.artist_id WHERE m.retired_at IS NULL").fetchall()
+    mass = lambda pids: sum(weight[p] for p in pids)  # noqa: E731
     n_new = 0
     for m in members:
         mine = sets.get(m["norm"], set())
         scored = []
         for n, s in sets.items():
             shared = mine & s
-            if n == m["norm"] or len(shared) < 2:
+            if n == m["norm"] or mass(shared) < 2:
                 continue
-            cos = len(shared) / math.sqrt(len(mine) * len(s))
+            cos = mass(shared) / math.sqrt(mass(mine) * mass(s))
             scored.append((cos, n, shared))
+        supported = set()
         for cos, n, shared in sorted(scored, key=lambda x: -x[0])[:3]:
-            names = sorted(playlists.pools[p]["name"] for p in shared)
-            reason = (f"both in {len(shared)} of your playlists: "
-                      + ", ".join(f"“{x}”" for x in names[:3]) + (", …" if len(names) > 3 else ""))
+            strong = sorted(playlists.pools[p]["name"] for p in shared if weight[p] == 1.0)
+            weak = sorted(playlists.pools[p]["name"] for p in shared if weight[p] != 1.0)
+            reason = (f"both in {len(strong)} of your playlists: "
+                      + ", ".join(f"“{x}”" for x in strong[:3]) + (", …" if len(strong) > 3 else ""))
+            if weak:
+                reason += (f"; also {len(weak)} year/decade list{'s' if len(weak) > 1 else ''}"
+                           " (weak evidence)")
+            supported.add(universe[n]["id"])
             n_new += _upsert_proposal(conn, m["id"], universe[n]["id"], "data", reason,
-                                      {"playlists": names}, round(cos, 3), now)
+                                      {"playlists": strong, "weak_playlists": weak}, round(cos, 3), now)
+        stale = conn.execute("SELECT id, dst_id FROM recall_link WHERE src_id=? AND origin='data'"
+                             " AND state='proposed'", (m["id"],)).fetchall()
+        for row in stale:
+            if row["dst_id"] not in supported:
+                conn.execute("DELETE FROM recall_link WHERE id=?", (row["id"],))
         if similar_fn:
             try:
                 sims = similar_fn(m["name"]) or []
@@ -869,6 +951,23 @@ def _upsert_proposal(conn, src, dst, origin, reason, evidence, confidence, now) 
     return 0
 
 
+def lookup_listeners(name: str, info_fn) -> Optional[int]:
+    """Global Last.fm listeners for exactly this artist, or None when unsure.
+
+    The name already came from Last.fm or Spotify, so ask for it verbatim first:
+    ``autocorrect=1`` can redirect to a different act (Ratboys → "Ratboy", 2k listeners vs
+    200k). Only when the exact name is unknown is the autocorrected answer tried, and it is
+    kept only if it is still the same name.
+    """
+    info = info_fn(name, autocorrect=False)
+    if info and info.get("listeners"):
+        return info["listeners"]
+    info = info_fn(name, autocorrect=True)
+    if info and info.get("listeners") and loose(info.get("name") or "") == loose(name):
+        return info["listeners"]
+    return None
+
+
 def run_refresh(conn, cache_dir: str = DEFAULT_MIX_CACHE, use_similar: bool = True,
                 now: Optional[datetime] = None) -> dict:
     """The side-effecting wrapper both surfaces call: load sources, then ``refresh``."""
@@ -879,8 +978,7 @@ def run_refresh(conn, cache_dir: str = DEFAULT_MIX_CACHE, use_similar: bool = Tr
         import lastfm_service as lfm
 
         def listeners_fn(name):
-            info = lfm.artist_info(name)
-            return info["listeners"] if info else None
+            return lookup_listeners(name, lfm.artist_info)
         if use_similar:
             similar_fn = lambda name: lfm.similar_artists(name, limit=30)  # noqa: E731
     return refresh(conn, listening, playlists, now, similar_fn, note, listeners_fn)
