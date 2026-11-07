@@ -62,10 +62,14 @@ spotify_service.py  ← Spotify search/matching (_name_sim, _search_line) + reso
 feed_service.py     ← Feed Radar: Firecrawl scrape + "Artist – Title" extraction (pure, unit-tested)
 lastfm_service.py   ← Last.fm reads: per-artist tags (roster --tags) + LASTFM_USER-scoped
                       scrobbles/loves (roster --mine). Key-only auth; TTL'd cache for user data
-cli.py              ← headless, prompt-free CLI (login / resolve / build) over spotify_service
+recall_service.py   ← Recall: candidates, rotating set, links, practice loop, schedule. No Flask —
+                      plain sqlite3 on the app DB, owns its own recall_* tables (ensure_schema)
+recall_cli.py       ← `cli.py recall …` subcommands (refresh/list/practice/stats/link/…) over recall_service
+cli.py              ← headless, prompt-free CLI (login / resolve / build / recall) over spotify_service
 templates/
   base.html         ← shared layout (Bootstrap, nav, cache footer)
   spotify_*.html    ← Spotify tool pages (incl. spotify_feed.html — Feed Radar)
+  recall_*.html     ← Recall dashboard (+ practice card) and per-artist detail
   plex_*.html       ← Plex tool pages
   recently_created.html
 instance/
@@ -100,6 +104,13 @@ ThawTally         # monthly count of tracks thawed from cooldown, per (year, mon
 AppSettings       # user-tunable cooldown_days (default 7) + cooldown_max_plays (default 2); driven by /settings
 FeedItem          # Feed Radar review queue: one row per (source, harvested line), keyed by item_hash; status pending|added|rejected|miss
 ```
+
+Recall's tables are **not** SQLAlchemy models — `recall_service.SCHEMA` creates them with raw
+`sqlite3` (same pattern as `mix_helper`): `recall_artist` (identity via `norm`, user-owned
+choice/hook vs refresh-owned bucket/score/evidence), `recall_alias`, `recall_link`
+(origin user|starter|data|inferred, state proposed|accepted|rejected), `recall_context`,
+`recall_active` (set membership + retirement), `recall_item` (schedulable prompt),
+`recall_session`, `recall_attempt`, `recall_note`, `recall_settings`.
 
 ---
 
@@ -145,6 +156,11 @@ FeedItem          # Feed Radar review queue: one row per (source, harvested line
 | `/recently-created/clear-dead` | POST — purge dead entries from DB |
 | `/settings` | GET/POST — tune cooldown window (days) and max plays before a track ices |
 | `/settings/thaw-all` | POST — clear all `TrackHistory`, freeing every cooldown track |
+| `/recall` | Recall dashboard — ready-to-recommend set, suggested links, practice card, stats |
+| `/recall/refresh` | POST — rebuild candidates from Last.fm + own playlists, rotate the set, propose links |
+| `/recall/artist/<name>` | Artist detail — reasons, hook, links, contexts, aliases (POST sub-routes edit each) |
+| `/recall/practice/{start,hint,submit,reveal,rate,end}` | POST — the step-based practice loop; each step persists |
+| `/recall/{choice,note,link/state}`, `/recall/curate/*` | POST — pin/dismiss/snooze/nope, conversation notes, accept/reject links, aliases |
 | `/plex/playlists` | Plex Block Mix |
 | `/plex/build` | POST — executes Plex Block Mix build |
 | `/plex/album-blaster` | Plex Album Blaster — browse playlists |
@@ -185,6 +201,28 @@ to real Spotify folders without reading the note in `/spotify/folder/set` first.
 **Text Import matching:** `_search_line()` searches tracks (limit=5) and albums (limit=3) separately, scores each result by word-overlap similarity (`_name_sim`) against the query title, and returns candidates sorted by score. `_detect_list_type()` votes across all lines to determine whether the list is track-dominant, album-dominant, or mixed (≥60% threshold). `_bias_matches()` re-sorts each row so the dominant type leads — preventing LLM-generated track lists from expanding into full albums. `_search_line` / `_name_sim` now live in `spotify_service.py` (shared with `cli.py`) and are imported back into `app.py`.
 
 **Feed Radar (`feed_service.py` + `FeedItem`):** watch a music blog, harvest new `Artist – Title` mentions, and hold Spotify matches in a review queue until you approve them into a playlist. `feed_service` keeps two responsibilities apart: fetch (side-effecting, shells out to the `firecrawl` CLI so it reuses `firecrawl login` — no API key threaded through Flask) and extract (pure, unit-tested in `test_feed_service.py`). Each source declares an extraction `mode`: `"anchors"` (cheap regex over markdown link anchors) or `"llm"` (Firecrawl structured extraction with a schema — slower/pricier but layout-agnostic). `/spotify/feed/poll` harvests → dedupes by `item_hash` (stable per source+line, so re-polling never re-queues) → runs the lines through `resolve_tracks()` (the *same* resolver as Text Import) → queues hits as `status="pending"` (dropping anything in `iced_ids("spotify")`) and non-matches as `status="miss"` for transparency. `/spotify/feed/resolve` bulk-adds selected pending items to a chosen playlist (re-checking the ice box at add time) or rejects them; handled items stay in the DB as `added`/`rejected` so they never re-queue. Sources are hardcoded for the prototype (`FEED_SOURCES`); a real version would store them in a table.
+
+**Recall (`recall_service.py`):** three layers kept apart — **load** (Last.fm via
+`lastfm_service`, own playlists from the `playlist_cache` row minus anything in
+`created_playlist`; no Spotify calls), **refresh** (idempotent; never overwrites a user
+decision — hooks, pin/dismiss/snooze/nope, accepted/rejected links all survive), **practice**
+(step-based; the public prompt view never contains the answer).
+- *Spread rule:* an artist counts as familiar only with spread — `min_weeks` distinct weeks in
+  the 13-week window, `anchor_min_plays` all-time, or ≥3 own playlists. One binge week never
+  qualifies. "Recent" additionally needs `recent_min_weeks` of the last `recent_weeks`, a play
+  floor, and a lift over the artist's own earlier weekly rate. Buckets: recent / developing /
+  anchor / playlist; set quotas 40/30/30, shortfall filled by (log-damped) score.
+- *Household filter:* auto-picks skip artists with Last.fm listeners ≥ `famous_listeners`
+  (1.5M) — practice is for the Lime Garden tier. Pins ignore it. The first refresh is slow
+  (~2 min) because it fetches a listener count per pick; `LISTENERS_REV` bump discards them.
+- *Rotation:* at most a quarter of the set ages out per refresh (after `rotate_days`), and a
+  rotated-out artist sits out `rotate_days` before returning.
+- *Links:* only `accepted` links become `recommend` prompts. `data` links come from shared
+  own-playlist placement (pools tagged annual/decade/rotation are weak evidence, ×0.25);
+  `inferred` from Last.fm similar artists; `starter` is the one-time brewery seed.
+- *Schedule ladder* (`DEFAULT_LADDER = "3,7,14,30"` days): couldn't/revealed early → back in
+  `relearn_days`, ladder resets; hinted success → half the current step; "took a moment" →
+  same step; "came easily" unaided → promote. Prompt kinds: recommend / lately / context / hook.
 
 ---
 
