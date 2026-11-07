@@ -1334,6 +1334,38 @@ def _record_source_usage(db, source_ids, provider="spotify"):
     db.commit()
 
 
+def _apply_tags(db, playlist_id, tags):
+    """Attach Manage-page tags to a playlist, idempotently. Returns the tags added.
+
+    Pools are titled by scene ("Texas Songwriters"), not genre, so the tag is what lets a
+    later "build me something country" find them. Normalized the way the web tag box
+    normalizes (trimmed, lowercased). The reserved `folder:` prefix is refused — folders
+    are a move, not a tag (see /spotify/folder/set).
+    """
+    added = []
+    for raw in tags or []:
+        tag = raw.strip().lower()
+        if not tag or tag.startswith("folder:"):
+            continue
+        cur = db.execute(
+            "INSERT OR IGNORE INTO playlist_tag (user_id, playlist_id, tag, created_at) "
+            "VALUES ('local', ?, ?, ?)",
+            (playlist_id, tag, datetime.now().isoformat(sep=" ")),
+        )
+        if cur.rowcount:
+            added.append(tag)
+    return added
+
+
+def _tag_and_report(playlist_id, tags):
+    if not tags:
+        return
+    db = _db()
+    added = _apply_tags(db, playlist_id, tags)
+    db.commit()
+    print(f"tagged: {', '.join(added) if added else '(already tagged)'}")
+
+
 def cmd_create(args):
     source_ids = _resolve_sources(args.source) if args.source else []
     if args.uris_file:
@@ -1389,6 +1421,8 @@ def cmd_create(args):
         extra = " + cooldown" if args.cooldown else ""
         usage = f" + usage×{len(source_ids)}" if source_ids else ""
         print(f"recorded to created_playlist{extra}{usage}")
+
+    _tag_and_report(pl["id"], args.tag)
 
     # Make it resolvable by roster/tracks/--source right away (issue #13) — without
     # this the skill can create a playlist it then can't use as a source until the
@@ -1456,6 +1490,8 @@ def cmd_replace(args):
         extra = " + cooldown" if args.cooldown else ""
         usage = f" + usage×{len(source_ids)}" if source_ids else ""
         print(f"updated created_playlist{extra}{usage}")
+
+    _tag_and_report(pid, args.tag)
 
     # Keep the blob honest about the new name/count — `replace` takes a raw id, so
     # the playlist may not be in the cache at all yet (issue #13). Last, for the
@@ -2259,6 +2295,8 @@ def main():
     c.add_argument("--source", action="append", metavar="PLAYLIST",
                    help="a source playlist (id or name substring) this mix drew from; "
                         "with --record, bumps its use_count like a web build. Repeatable.")
+    c.add_argument("--tag", action="append", metavar="TAG",
+                   help="Manage-page tag to attach (e.g. pool, country). Repeatable.")
     c.set_defaults(func=cmd_create)
 
     r = sub.add_parser("replace", help="replace all tracks in an existing playlist in place")
@@ -2275,6 +2313,8 @@ def main():
     r.add_argument("--source", action="append", metavar="PLAYLIST",
                    help="a source playlist (id or name substring) this mix drew from; "
                         "with --record, bumps its use_count like a web build. Repeatable.")
+    r.add_argument("--tag", action="append", metavar="TAG",
+                   help="Manage-page tag to attach (e.g. pool, country). Repeatable.")
     r.set_defaults(func=cmd_replace)
 
     rc = sub.add_parser("refresh-cache",
