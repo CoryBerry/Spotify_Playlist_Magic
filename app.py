@@ -25,7 +25,7 @@ load_dotenv()
 
 # Search/matching helpers now live in spotify_service (shared with the headless CLI) so
 # there is one source of truth. Imported back here for the web routes that use them.
-from spotify_service import _name_sim, _search_line
+from spotify_service import _name_sim, _search_line, ARTIST_PREFIX, artist_ids_of, artist_iced_uris
 
 # Music recall (see recall_service.py) keeps its own sqlite3 connection over the same
 # instance/spotify_tools.db file, independent of the SQLAlchemy models above — the
@@ -312,16 +312,38 @@ def _add_months(dt, n):
     return dt.replace(year=y, month=m, day=min(dt.day, dim))
 
 
+def _ice_now(provider):
+    return TrackIce.query.filter(
+        TrackIce.provider == provider,
+        db.or_(TrackIce.thaw_at.is_(None), TrackIce.thaw_at > datetime.now()),
+    ).all()
+
+
 def iced_ids(provider):
     """Track ids on manual ice *right now*: never-list (thaw_at NULL) or not yet thawed.
 
     Hard exclusion — callers must drop these unconditionally (no small-pool fallback).
+    Track rows only: a frozen *artist* is stored as a `spotify:artist:<id>` row in the same
+    table (the URI prefix is the discriminator — no kind column), and is excluded here so it
+    never masquerades as a track. Spotify build sites use `iced_for()` to fold artists in.
     """
-    rows = TrackIce.query.filter(
-        TrackIce.provider == provider,
-        db.or_(TrackIce.thaw_at.is_(None), TrackIce.thaw_at > datetime.now()),
-    ).all()
-    return {r.track_id for r in rows}
+    return {r.track_id for r in _ice_now(provider) if not r.track_id.startswith(ARTIST_PREFIX)}
+
+
+def iced_artist_ids(provider="spotify"):
+    """Bare Spotify artist ids frozen *right now* (issue #10)."""
+    return {r.track_id[len(ARTIST_PREFIX):] for r in _ice_now(provider)
+            if r.track_id.startswith(ARTIST_PREFIX)}
+
+
+def iced_for(sp, uris, known=None):
+    """The hard-exclusion set for one Spotify build: iced tracks + tracks by frozen artists.
+
+    Pre-expanding the set keeps every existing `u not in iced` filter unchanged. `known`
+    is {uri: [artist_id, ...]} for tracks whose artists the site already fetched; the rest
+    are looked up only if some artist is actually frozen.
+    """
+    return iced_ids("spotify") | artist_iced_uris(sp, uris, iced_artist_ids(), known)
 
 
 def auto_thaw(provider):
@@ -638,19 +660,21 @@ def spotify_build():
     # tracklist + per-track freeze snowflake without a second round of API calls.
     all_tracks     = {}
     track_meta      = {}
+    track_artists   = {}  # uri -> [artist_id] for the artist ice box
     playlist_names  = {}
     playlist_owners = {}
     for playlist_id in selected_ids:
         playlist_names[playlist_id]  = request.form.get(f"name_{playlist_id}", playlist_id)
         playlist_owners[playlist_id] = request.form.get(f"owner_{playlist_id}", "")
         tracks  = []
-        results = sp.playlist_tracks(playlist_id, fields="next,items(track(uri,name,artists(name)))")
+        results = sp.playlist_tracks(playlist_id, fields="next,items(track(uri,name,artists(name,id)))")
         while results:
             for item in results["items"]:
                 tr = item["track"]
                 if not tr:
                     continue
                 tracks.append(tr["uri"])
+                track_artists[tr["uri"]] = artist_ids_of(tr)
                 track_meta[tr["uri"]] = {
                     "name":   tr["name"],
                     "artist": ", ".join(a["name"] for a in tr.get("artists", [])),
@@ -674,7 +698,8 @@ def spotify_build():
         TrackHistory.used_at  >= cutoff
     ).group_by(TrackHistory.track_id).all()
     on_cooldown = {r.track_id for r in raw if r.n >= settings.cooldown_max_plays}
-    iced = iced_ids("spotify")  # hard exclusion — never returns, even on small-pool fallback
+    # hard exclusion (tracks + frozen artists) — never returns, even on small-pool fallback
+    iced = iced_for(sp, list(track_artists), track_artists)
     cooldown_excluded = sum(sum(1 for t in tracks if t in on_cooldown) for tracks in all_tracks.values())
     for pid in list(all_tracks):
         pool  = [t for t in all_tracks[pid] if t not in iced]
@@ -861,14 +886,17 @@ def album_blast():
     # Fetch all tracks from each album
     track_uris  = []
     album_names = []
+    artists_of  = {}  # album_tracks items carry artist ids — feeds the artist ice box
     for album_id, album_name in album_ids:
         album_names.append(album_name)
         results = sp.album_tracks(album_id)
         while results:
-            track_uris.extend(item["uri"] for item in results["items"])
+            for item in results["items"]:
+                track_uris.append(item["uri"])
+                artists_of[item["uri"]] = artist_ids_of(item)
             results = sp.next(results) if results["next"] else None
 
-    iced       = iced_ids("spotify")  # hard exclusion, even on explicit picks
+    iced       = iced_for(sp, track_uris, artists_of)  # hard exclusion, even on explicit picks
     track_uris = [u for u in track_uris if u not in iced]
 
     # Create new playlist and add tracks in batches of 100
@@ -927,19 +955,22 @@ def _group_playlist_albums(sp, playlist_id):
     """Fetch a playlist's tracks once, grouped by album id.
 
     Album info rides along on every track object, so this is a single pass with
-    no per-album API calls. Returns (playlist_name, {album_id: {name, uris}})."""
+    no per-album API calls. Returns (playlist_name, {album_id: {name, uris, artists}}),
+    where `artists` is {uri: [artist_id]} for the artist ice box."""
     playlist = sp.playlist(playlist_id, fields="name")
     albums   = {}
     results  = sp.playlist_tracks(
-        playlist_id, fields="next,items(track(uri,album(id,name)))")
+        playlist_id, fields="next,items(track(uri,artists(id),album(id,name)))")
     while results:
         for item in results["items"]:
             track = item.get("track")
             if not track or not track.get("album") or not track["album"].get("id"):
                 continue
             aid    = track["album"]["id"]
-            bucket = albums.setdefault(aid, {"name": track["album"]["name"], "uris": []})
+            bucket = albums.setdefault(aid, {"name": track["album"]["name"], "uris": [],
+                                             "artists": {}})
             bucket["uris"].append(track["uri"])
+            bucket["artists"][track["uri"]] = artist_ids_of(track)
         results = sp.next(results) if results["next"] else None
     return playlist["name"], albums
 
@@ -985,7 +1016,8 @@ def sample_build():
         album_names.append(album["name"])
         track_uris.extend(album["uris"][:songs_per])  # first X tracks of the album
 
-    iced       = iced_ids("spotify")  # hard exclusion, even on explicit picks
+    known      = {u: ids for a in albums.values() for u, ids in a["artists"].items()}
+    iced       = iced_for(sp, track_uris, known)  # hard exclusion, even on explicit picks
     track_uris = [u for u in track_uris if u not in iced]
 
     title    = (request.form.get("title") or "").strip() or playlist_name
@@ -1050,12 +1082,16 @@ def album_sampler_blocks():
         TrackHistory.used_at  >= cutoff
     ).group_by(TrackHistory.track_id).all()
     on_cooldown = {r.track_id for r in raw if r.n >= settings.cooldown_max_plays}
-    iced = iced_ids("spotify")  # hard exclusion — never returns, even on small-pool fallback
+    iced_tracks = iced_ids("spotify")
+    frozen      = iced_artist_ids()
 
     track_uris  = []
     album_names = []
     for playlist_id in selected_ids:
         _, albums = _group_playlist_albums(sp, playlist_id)
+        # hard exclusion (tracks + frozen artists) — never returns, even on small-pool fallback
+        iced = iced_tracks | {u for a in albums.values() for u, ids in a["artists"].items()
+                              if frozen.intersection(ids)}
         album_ids = list(albums.keys())
         picked    = random.sample(album_ids, min(albums_per, len(album_ids)))
         for aid in picked:
@@ -1269,22 +1305,35 @@ def spotify_ice_thaw():
 
 @app.route("/spotify/ice/search")
 def spotify_ice_search():
-    """Search Spotify for a track to freeze (freeze-a-track box on the Ice Box page)."""
+    """Search Spotify for an artist or track to freeze (the Ice Box page's search box).
+
+    Artists come first (top 3) — freezing one hard-excludes every track they're credited
+    on (issue #10). Each result carries `kind` so the page can render it distinctly.
+    """
     sp = get_spotify_client()
     if not sp:
         return jsonify({"error": "not connected"}), 401
     q = request.args.get("q", "").strip()
     if not q:
         return jsonify({"results": []})
-    items = sp.search(q=q, type="track", limit=8)["tracks"]["items"]
-    iced  = iced_ids("spotify")
+    res     = sp.search(q=q, type="artist,track", limit=8)
+    iced    = iced_ids("spotify")
+    frozen  = iced_artist_ids()
     results = [{
+        "kind":   "artist",
+        "uri":    a["uri"],
+        "name":   a["name"],
+        "artist": a["name"],
+        "iced":   a["id"] in frozen,
+    } for a in (res.get("artists") or {}).get("items", [])[:3] if a]
+    results += [{
+        "kind":   "track",
         "uri":    t["uri"],
         "name":   t["name"],
         "artist": ", ".join(a["name"] for a in t["artists"]),
         "album":  t["album"]["name"],
-        "iced":   t["uri"] in iced,
-    } for t in items]
+        "iced":   t["uri"] in iced or bool(frozen.intersection(artist_ids_of(t))),
+    } for t in (res.get("tracks") or {}).get("items", []) if t]
     return jsonify({"results": results})
 
 
@@ -1590,7 +1639,7 @@ def spotify_stats(playlist_id):
     playlist = sp.playlist(playlist_id, fields="name,tracks.total,owner.id")
 
     tracks  = []
-    results = sp.playlist_tracks(playlist_id, fields="next,items(track(uri,name,duration_ms,artists(name)))")
+    results = sp.playlist_tracks(playlist_id, fields="next,items(track(uri,name,duration_ms,artists(name,id)))")
     while results:
         for item in results["items"]:
             if item["track"]:
@@ -1616,7 +1665,9 @@ def spotify_stats(playlist_id):
                      .order_by(BuildSource.position)
                      .all()) if cp else []
 
-    iced      = iced_ids("spotify")
+    frozen    = iced_artist_ids()
+    iced      = iced_ids("spotify") | {t["uri"] for t in tracks
+                                       if t.get("uri") and frozen.intersection(artist_ids_of(t))}
     tracklist = [{"uri": t.get("uri", ""),
                   "name": t.get("name", ""),
                   "artist": ", ".join(a["name"] for a in t.get("artists", [])),
@@ -1899,7 +1950,7 @@ def text_import_build():
         else:
             track_uris.append(uri)
 
-    iced       = iced_ids("spotify")  # hard exclusion, even on explicit picks
+    iced       = iced_for(sp, track_uris)  # hard exclusion (tracks + artists), even on explicit picks
     track_uris = [u for u in track_uris if u not in iced]
 
     if not track_uris:
@@ -2005,7 +2056,7 @@ def feed_poll():
     #    (minus anything on ice), low-confidence/no-match land as 'miss' for visibility.
     resolved, missed = resolve_tracks(sp, [line for line, _ in fresh])
     by_line = {r["line"]: r for r in resolved}
-    iced    = iced_ids("spotify")
+    iced    = iced_for(sp, [r["uri"] for r in resolved])
 
     n_new = n_miss = 0
     for line, h in fresh:
@@ -2059,7 +2110,7 @@ def feed_resolve():
         flash("Pick a target playlist first.", "warning")
         return redirect(url_for("feed_radar"))
 
-    iced = iced_ids("spotify")
+    iced = iced_for(sp, [it.matched_uri for it in items if it.matched_uri])
     uris = [it.matched_uri for it in items if it.matched_uri and it.matched_uri not in iced]
     seen = set()
     uris = [u for u in uris if not (u in seen or seen.add(u))]

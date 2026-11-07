@@ -259,3 +259,36 @@ def create_playlist_from_lines(
         "missed": misses,
         "gen_seconds": round(time.time() - t0, 1),
     }
+
+
+# ---------------------------------------------------------------------------
+# Artist ice — expand a frozen-artist set into the track URIs it covers
+# ---------------------------------------------------------------------------
+
+ARTIST_PREFIX = "spotify:artist:"
+
+
+def artist_ids_of(track: dict) -> list[str]:
+    """Bare artist ids credited on a Spotify track object (empty if none/local)."""
+    return [a["id"] for a in (track.get("artists") or []) if a and a.get("id")]
+
+
+def artist_iced_uris(sp, uris, frozen_artists: set, known: Optional[dict] = None) -> set:
+    """Track URIs in ``uris`` credited to any artist in ``frozen_artists`` (bare ids).
+
+    ``known`` maps uri -> [artist_id, …] for tracks whose artists the caller already has
+    (most fetch sites get them free on the track object). Anything missing is looked up via
+    ``sp.tracks`` 50 at a time — but only when an artist is actually frozen, so the common
+    case costs nothing. A track matches if *any* credited artist is frozen (features count).
+    """
+    if not frozen_artists:
+        return set()
+    known = dict(known or {})
+    missing = [u for u in dict.fromkeys(uris)
+               if u not in known and isinstance(u, str) and u.startswith("spotify:track:")]
+    for i in range(0, len(missing), 50):
+        batch = sp.tracks([u.split(":")[-1] for u in missing[i:i + 50]])
+        for t in batch.get("tracks") or []:
+            if t and t.get("uri"):
+                known[t["uri"]] = artist_ids_of(t)
+    return {u for u in uris if frozen_artists.intersection(known.get(u, ()))}

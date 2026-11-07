@@ -60,7 +60,8 @@ From any playlist's Stats page, shuffle the whole tracklist with a fresh OS-entr
 A manual, long-lived exclusion list — a **hard** never-list or a timed freeze — shared with the `mix` skill (both read and write the same `track_ice` table, so a freeze in either place is honored by the next build immediately). Unlike the automatic cooldown, an iced track *never* enters a build, even as a small-pool fallback.
 
 - **Ice Box page** (`/spotify/ice-box`) lists every currently-frozen track with its reason and thaw date (or "never"), each with a **Thaw** button.
-- **Freeze a track** search resolves any Spotify title/artist and freezes it for **Never / 12 / 6 / 3 months** with an optional reason — even tracks that aren't in any recent build.
+- **Freeze an artist or track** search resolves any Spotify artist or title and freezes it for **Never / 12 / 6 / 3 months** with an optional reason — even tracks that aren't in any recent build.
+- **Freeze a whole artist** (🎤) — for the "good, but I keep not wanting them" artists. Every track they're credited on (features included) is hard-excluded from Block Mix, Album Blast, Album Sampler, Text Import, and Feed Radar. Matched by Spotify artist ID, so same-named bands never collide. _(Spotify builds only for now — Plex and the `mix` skill still honor track freezes only.)_
 - The same 🧊 snowflake dropdown appears on the **build done page** tracklist and the **Playlist Stats** tracklist, and a 🧊 shortcut on each **Manage** row jumps to that playlist's tracklist. Timed ice thaws itself on the same schedule as the cooldown.
 
 ### 🧠 Recall
