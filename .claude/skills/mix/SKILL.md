@@ -78,7 +78,7 @@ Two axes. **Tier** — how much to trust a hit:
   ambiguous between *not yet tagged* and *not for mixes*; `nomix` says the second out loud.
   Office mixes keep `office` alongside it so the history stays findable.
 
-**Vibe/kind:** `chill`, `electronic`, `folk`, `instrumental`, `yoga`, `hype` (high energy),
+**Vibe/kind:** `chill`, `electronic`, `folk`, `instrumental`, `yoga`, `hype` (energy 4–5),
 `decade` (60s–2020s + century pools), `rotation` (the 10/20/30, low signal),
 `current` (`Last 300 Liked`, Release Radar — rolling now-signal), `office`, `kids`, `gym`.
 
@@ -328,6 +328,25 @@ suggests — an 8-9 min remix or a 7 min house cut is worth two ordinary tracks.
 low-conviction picks first; that's usually two or three edits rather than a rebalance.
 
 ### 3. Curate — this is the part that matters
+
+**Energy is always a number on the house 1–5 scale** — every mix, small ones included.
+"Low/mid/high" are retired; speak, tag, and report in numbers so a brief like "keep it 3–4"
+means the same thing every build.
+
+| # | Name | Feel | Typical lanes |
+|---|---|---|---|
+| 1 | **Still** | ambient, no/barely-there drums, pure background | ambient, solo piano, drone |
+| 2 | **Easy** | soft groove, you can talk over it | downtempo, folk, mellow soul, chill hip-hop |
+| 3 | **Cruise** | steady mid-tempo head-nod — the Cruise Control gear | indie rock, boom-bap, Motown, deep house |
+| 4 | **Drive** | clearly up, you move to it | dance-punk, uptempo house, punk, anthem hip-hop |
+| 5 | **Peak** | bangers, full intensity | hyperpop, neurofunk D&B, hard/industrial |
+
+Rate the *track*, not the lane — the lanes are a starting guess, and a slow-burn house cut is
+a 3 while a punk ballad is a 2. When Cory names a track as an anchor ("that's a 4"), it beats
+this table. Translate briefs into a range up front and say it back (e.g. "gym → 4–5, climbs
+and stays"; "morning office → mellow 1–3"). In the post-build review, give the range the mix
+actually covers.
+
 Don't shuffle. Hand-pick and **sequence** into an intentional arc. Defaults that have
 worked: ~18–24 tracks; no two adjacent tracks share an artist; interleave sources so no
 genre clumps; give the mix a named shape (e.g. Slow Burn = ambient → indie → soft groove
@@ -344,7 +363,7 @@ re-deriving the arc math by hand (that's how the first big one burned a pile of 
 
 ```
 # input: one 'uri<TAB>energy[<TAB>artist[<TAB>name[<TAB>lane]]]' line per track.
-# energy is YOUR taste call — 1=mellow, 2=mid, 3=banger (any integer scale).
+# energy is YOUR taste call on the 1–5 scale above (anything else is rejected).
 # lane is YOUR genre bucket — dance-punk / disco / house / … (optional; see below).
 PYTHONUTF8=1 python .claude/skills/mix/mix_helper.py sequence --tracks picks.txt > ordered.txt
 ```
@@ -355,7 +374,8 @@ transition shoulders (best-effort; a genuine peak/trough may sustain longer, whi
 fine — a run of bangers at the apex *is* an "up"). `--seed` makes the within-energy
 shuffle reproducible; `--uris-only` pipes straight into `create`. It prints an **energy
 sparkline to stderr** (`▄▄▄█▄▄███▄…▁▁▁`) — glance at it to confirm the shape before you
-ship, rather than reading 100 rows. Pure local logic, no Spotify calls.
+ship, rather than reading 100 rows. The sparkline is drawn against the fixed 1–5 scale, so
+a mix that lives in 3–4 looks like it. Pure local logic, no Spotify calls.
 
 **Give it a lane column for anything party-shaped.** Energy and genre are different axes:
 a set can hold a flawless energy curve and still play eight dance-punk tracks back to back,

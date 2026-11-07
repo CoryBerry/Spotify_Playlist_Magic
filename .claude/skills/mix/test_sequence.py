@@ -14,6 +14,8 @@ import argparse
 import importlib
 from collections import Counter
 
+import pytest
+
 mh = importlib.import_module("mix_helper")
 
 
@@ -331,3 +333,17 @@ def test_uris_only_still_prints_bare_uris_with_lanes(tmp_path, capsys):
     out = capsys.readouterr().out.strip().splitlines()
     assert all(r.startswith("spotify:track:") and "\t" not in r for r in out)
 
+
+
+def test_energy_off_the_1_to_5_scale_is_rejected(tmp_path):
+    lines = [f"spotify:track:{i}\t{e}" for i, e in enumerate([1, 3, 6])]
+    with pytest.raises(SystemExit, match="off the 1–5 scale"):
+        mh.cmd_sequence(_args(_write(tmp_path, lines)))
+
+
+def test_sparkline_draws_against_the_fixed_1_to_5_scale(tmp_path, capsys):
+    """A mix that lives in 3–4 must not render as floor-to-ceiling."""
+    lines = [f"spotify:track:{i}\t{3 + i % 2}" for i in range(8)]
+    mh.cmd_sequence(_args(_write(tmp_path, lines)))
+    spark = capsys.readouterr().err.split("# energy ")[1].splitlines()[0]
+    assert "▁" not in spark and "█" not in spark
