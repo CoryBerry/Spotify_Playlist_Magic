@@ -174,7 +174,12 @@ def _cache_upsert_playlist(pl, user_id, track_total=None):
     Newest goes first, matching how Spotify paginates a library.
     """
     pls = _read_playlist_cache() or []
-    entry = dict(pl)
+    # Merge onto the cached entry: `replace` fetches a slim object, and dropping
+    # `owner` 500s every web page that reads `playlist.owner.id`. Only the user's
+    # own playlists reach here (create/replace), so they're the owner by default.
+    prior = next((p for p in pls if p.get("id") == pl.get("id")), {})
+    entry = {**prior, **pl}
+    entry.setdefault("owner", {"id": user_id, "display_name": user_id})
     if track_total is not None:
         entry["tracks"] = dict(entry.get("tracks") or {}, total=track_total)
     pls = [entry] + [p for p in pls if p.get("id") != entry.get("id")]
@@ -1459,7 +1464,7 @@ def cmd_replace(args):
             **({"description": args.desc} if args.desc else {}),
         )
 
-    pl = sp.playlist(pid, fields="id,external_urls,name")
+    pl = sp.playlist(pid, fields="id,external_urls,name,owner(id,display_name)")
     url = pl["external_urls"]["spotify"]
     print(f"REPLACED  {pl['name']}  ({len(uris)} tracks)")
     print(url)
