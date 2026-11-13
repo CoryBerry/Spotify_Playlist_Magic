@@ -123,6 +123,14 @@ delete a few tracks than rebuild a list.** When genuinely torn, include.
 - A plain `(Remastered)` is **not** a deluxe — it carries the original tracklist and
   is left alone.
 
+## Pools stand on their own
+
+Never leave a record out of a pool because another pool already has it (Cory, 2026-11-12:
+"these collections should stand on their own"). A scene pool must make sense without the
+RS500 or decade pools beside it, so the canon goes in even if it's duplicated elsewhere. Only
+check for overlap *within* a pool: don't put a hits compilation and the albums it was drawn
+from in the same pool.
+
 ## Sequencing
 
 Chronological by the album's *earliest* release date across its editions, so picking a
