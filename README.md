@@ -47,13 +47,29 @@ leaves it.
 > folders exist only inside the official client and can't be read or written by third-party apps —
 > so filing something here won't move it in Spotify itself. _(Spotify only)_
 
+### 🔤 Generated Playlist Names
+
+Since Spotify can't show this app's folders, the names do the organizing. Every playlist the app
+creates is named `[Kind] Title — Nov 12 '26`:
+
+- **`[Kind]` first** — `[Block]`, `[Sampler]`, `[Blast]`, `[Import]` — so each tool's output
+  groups together when you sort your Spotify library alphabetically (the `mix` skill uses `[Mix]`).
+- **Title next** — whatever you type in the name box, or, if blank, what the playlist actually
+  holds: its sources (`Chill Selects & Easy Drops`, `Indie Selects +3`) or its albums. Never just
+  the weekday. These are the words a search will find.
+- **Date last** — least useful for searching, so it goes at the end.
+
+A shuffled copy keeps the original's name up front (`Chill Selects — Shuffled Nov 12 '26`) so it
+sorts right beside it. Block Mix hides its own earlier builds (old- and new-style names) from the
+source grid.
+
 ### 📊 Playlist Stats
 
 See track count, total runtime, unique artist count, and a top-10 artist breakdown for any playlist. Also shows how many times it's been used in a Block Mix build, plus a full tracklist with a 🧊 snowflake on every row so you can freeze a track into the Ice Box without leaving the page.
 
 ### 🔀 Randomize
 
-From any playlist's Stats page, shuffle the whole tracklist with a fresh OS-entropy random seed (surfaced in the confirmation so the shuffle is auditable). Two options: **Shuffle this playlist** reorders it in place (only for playlists you own), or **Create a shuffled copy** leaves the original alone and builds a new private `… : Shuffled` playlist. It's a pure reorder — nothing is added or removed, and cooldown / ice box / Block Mix knobs don't apply. _(Spotify only)_
+From any playlist's Stats page, shuffle the whole tracklist with a fresh OS-entropy random seed (surfaced in the confirmation so the shuffle is auditable). Two options: **Shuffle this playlist** reorders it in place (only for playlists you own), or **Create a shuffled copy** leaves the original alone and builds a new private `… — Shuffled <date>` playlist. It's a pure reorder — nothing is added or removed, and cooldown / ice box / Block Mix knobs don't apply. _(Spotify only)_
 
 ### 🧊 Ice Box
 
