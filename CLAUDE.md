@@ -59,6 +59,7 @@ Restore instructions for a new machine are in `profile/README.md`.
 app.py              ← Flask routes, models, and web-specific helpers
 spotify_service.py  ← Spotify search/matching (_name_sim, _search_line) + resolve_tracks /
                       create_playlist_from_lines — one source of truth, shared with the CLI
+naming.py           ← generated playlist names: `[Kind] Title — Mon D 'YY` (pure, tested in test_naming.py)
 feed_service.py     ← Feed Radar: Firecrawl scrape + "Artist – Title" extraction (pure, unit-tested)
 lastfm_service.py   ← Last.fm reads: per-artist tags (roster --tags) + LASTFM_USER-scoped
                       scrobbles/loves (roster --mine). Key-only auth; TTL'd cache for user data
@@ -141,7 +142,7 @@ choice/hook vs refresh-owned bucket/score/evidence), `recall_alias`, `recall_lin
 | `/spotify/text-import/build` | POST — create playlist from manual-select form |
 | `/spotify/stats` | Playlist picker — choose a playlist to view its stats |
 | `/spotify/stats/<id>` | Track count, runtime, top artists, usage count, tracklist with per-track 🧊 freeze; Randomize (shuffle in place / shuffled copy) |
-| `/spotify/randomize` | POST — shuffle a playlist's order with a fresh OS-entropy seed; `mode=inplace` (owned only) or `mode=copy` (new `… : Shuffled` playlist) |
+| `/spotify/randomize` | POST — shuffle a playlist's order with a fresh OS-entropy seed; `mode=inplace` (owned only) or `mode=copy` (new `… — Shuffled <date>` playlist) |
 | `/spotify/ice-box` | Ice Box — list frozen tracks (thaw date/"never") + freeze-a-track search |
 | `/spotify/ice/freeze` | POST JSON — freeze a track (never-list or timed); upserts on (track_id, provider) |
 | `/spotify/ice/thaw` | POST JSON — thaw (delete) a track from the ice box |

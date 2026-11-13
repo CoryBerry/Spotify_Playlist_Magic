@@ -426,6 +426,10 @@ from" rule below — a heat pick (or a heat veto) is exactly as worth surfacing 
   you can pass `--name "[Mix] …"` or plain `--name "…"`; opt out with `--no-prefix`.
   `replace --name` applies the same tag, so renaming an existing mix can't quietly
   drop it out of the group; `replace` without `--name` leaves the name alone.
+- **Follow the naming rule** in `profile/CONTEXT.md` (`## Naming new playlists`) when it
+  has one: a plain vocabulary word before the dash so search finds it, the clever title after it.
+  If the name you'd pick breaks the rule, say so instead of shipping it silently. New mixes only;
+  never rename old ones to fit.
 - **Every mix comes out public.** Spotify ignores the `public` flag, both when creating a
   playlist and when changing it later (the API returns 200 and leaves it public). So there's
   no private option. `create` reads the real state back and prints it on the `CREATED`

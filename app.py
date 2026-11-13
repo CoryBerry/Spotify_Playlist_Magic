@@ -25,6 +25,7 @@ load_dotenv()
 
 # Search/matching helpers now live in spotify_service (shared with the headless CLI) so
 # there is one source of truth. Imported back here for the web routes that use them.
+from naming import generated_name, is_block_mix, lead_title, shuffled_copy_name
 from spotify_service import _name_sim, _search_line, ARTIST_PREFIX, artist_ids_of, artist_iced_uris
 
 # Music recall (see recall_service.py) keeps its own sqlite3 connection over the same
@@ -57,20 +58,6 @@ def _bias_matches(line_results, list_type):
         other     = [m for m in lr["matches"] if m["type"] != list_type]
         lr["matches"] = preferred + other
 
-
-def _now_label():
-    return datetime.now().strftime('%m/%d %I:%M%p')
-
-def _date_label():
-    now = datetime.now()
-    return now.strftime("%B ") + str(now.day) + now.strftime(" '%y")  # e.g. "March 6 '26"
-
-def _period_of_day():
-    hour = datetime.now().hour
-    if hour < 12:  return "Morning"
-    if hour < 17:  return "Afternoon"
-    if hour < 21:  return "Evening"
-    return "Night"
 
 app = Flask(__name__)
 _secret_key = os.environ.get("SECRET_KEY")
@@ -590,7 +577,7 @@ def spotify_playlists():
     # Guard against null items and null tracks fields the Spotify API occasionally returns
     playlists = [p for p in playlists
                  if p and p.get("tracks") and p["tracks"]["total"] >= 20
-                 and "Block Mix" not in p.get("name", "")]
+                 and not is_block_mix(p.get("name", ""))]
 
     # Pass tag data so Block Mix can filter by tag
     all_tags = PlaylistTag.query.filter_by(user_id="local").all()
@@ -758,12 +745,9 @@ def spotify_build():
 
     # Create playlist
     user_id        = sp.me()["id"]
-    prefix        = request.form.get("playlist_prefix", "").strip()
-    if prefix:
-        base = f"{prefix} : Block Mix"
-    else:
-        base = f"{datetime.now().strftime('%A')} {_period_of_day()} : Block Mix"
-    playlist_name = f"{base} : {_date_label()}"
+    title         = (request.form.get("playlist_prefix", "").strip()
+                     or lead_title([playlist_names.get(pid, "") for pid in selected_ids]))
+    playlist_name = generated_name("Block", title)
     new_playlist  = sp.user_playlist_create(user_id, playlist_name, public=False)
     # Add tracks in batches of 100 — Spotify's API limit per request
     for i in range(0, len(track_uris), 100):
@@ -902,7 +886,7 @@ def album_blast():
     # Create new playlist and add tracks in batches of 100
     user_id      = sp.me()["id"]
     new_playlist = sp.user_playlist_create(
-        user_id, f"Album Blast {_now_label()}", public=False
+        user_id, generated_name("Blast", lead_title(album_names)), public=False
     )
     for i in range(0, len(track_uris), 100):
         sp.playlist_add_items(new_playlist["id"], track_uris[i:i + 100])
@@ -1021,7 +1005,7 @@ def sample_build():
     track_uris = [u for u in track_uris if u not in iced]
 
     title    = (request.form.get("title") or "").strip() or playlist_name
-    new_name = f"{title} : Album Samples {datetime.now().strftime('%m/%d')}"
+    new_name = generated_name("Sampler", title)
 
     user_id      = sp.me()["id"]
     new_playlist = sp.user_playlist_create(user_id, new_name, public=False)
@@ -1105,12 +1089,9 @@ def album_sampler_blocks():
     seen       = set()
     track_uris = [u for u in track_uris if not (u in seen or seen.add(u))]
 
-    prefix = request.form.get("playlist_prefix", "").strip()
-    if prefix:
-        base = f"{prefix} : Album Sampler"
-    else:
-        base = f"{datetime.now().strftime('%A')} {_period_of_day()} : Album Sampler"
-    playlist_name = f"{base} : {_date_label()}"
+    title = (request.form.get("playlist_prefix", "").strip()
+             or lead_title([request.form.get(f"name_{pid}", "") for pid in selected_ids]))
+    playlist_name = generated_name("Sampler", title)
 
     user_id      = sp.me()["id"]
     new_playlist = sp.user_playlist_create(user_id, playlist_name, public=False)
@@ -1439,7 +1420,7 @@ def plex_playlists():
 
     playlists = [p for p in plex.playlists()
                  if p.playlistType == "audio" and p.leafCount >= PLEX_MIN_TRACKS
-                 and "Block Mix" not in p.title]
+                 and not is_block_mix(p.title)]
 
     usage_records   = PlaylistUsage.query.filter_by(provider="plex").all()
     usage_map_count = {r.playlist_id: r.use_count for r in usage_records}
@@ -1529,12 +1510,8 @@ def plex_build():
             deduped.append(track)
     block_tracks = deduped
 
-    prefix       = request.form.get("playlist_prefix", "").strip()
-    if prefix:
-        base = f"{prefix} : Block Mix"
-    else:
-        base = f"{datetime.now().strftime('%A')} {_period_of_day()} : Block Mix"
-    title        = f"{base} : {_date_label()}"
+    title        = generated_name("Block", request.form.get("playlist_prefix", "").strip()
+                                  or lead_title([request.form.get(f"name_{k}", "") for k in selected_keys]))
     new_playlist = plex.createPlaylist(title, items=block_tracks)
 
     db.session.add(CreatedPlaylist(
@@ -1607,7 +1584,7 @@ def plex_album_blast():
     iced       = iced_ids("plex")  # hard exclusion, even on explicit picks
     all_tracks = [t for t in all_tracks if str(t.ratingKey) not in iced]
 
-    title        = f"Album Blast {_now_label()}"
+    title        = generated_name("Blast", lead_title(album_names))
     new_playlist = plex.createPlaylist(title, items=all_tracks)
 
     db.session.add(CreatedPlaylist(
@@ -1749,7 +1726,7 @@ def spotify_randomize():
 
     # mode == "copy" — build a fresh private playlist holding the shuffled order.
     t0           = time.time()
-    new_name     = f"{playlist['name']} : Shuffled : {_date_label()}"
+    new_name     = shuffled_copy_name(playlist['name'])
     new_playlist = sp.user_playlist_create(user_id, new_name, public=False)
     for i in range(0, len(uris), 100):
         sp.playlist_add_items(new_playlist["id"], uris[i:i + 100])
@@ -1844,7 +1821,7 @@ def text_import_preview():
         return redirect(url_for("spotify_login"))
 
     raw_text             = request.form.get("playlist_text", "")
-    playlist_name        = request.form.get("playlist_name", "").strip() or f"Text Import {_date_label()}"
+    playlist_name        = request.form.get("playlist_name", "").strip() or generated_name("Import")
     mode                 = request.form.get("mode", "trust")  # "trust" or "manual"
     existing_playlist_id = request.form.get("existing_playlist_id", "").strip()
 
@@ -1931,7 +1908,7 @@ def text_import_build():
     if not sp:
         return redirect(url_for("spotify_login"))
 
-    playlist_name        = request.form.get("playlist_name", f"Text Import {_date_label()}")
+    playlist_name        = (request.form.get("playlist_name", "").strip() or generated_name("Import"))
     existing_playlist_id = request.form.get("existing_playlist_id", "").strip()
     line_count           = int(request.form.get("line_count", 0))
     raw_uris      = [request.form.get(f"uri_{i}", "skip") for i in range(line_count)]

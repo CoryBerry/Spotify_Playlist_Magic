@@ -106,9 +106,12 @@ These are Cory's, decided explicitly. The governing principle: **he would rather
 delete a few tracks than rebuild a list.** When genuinely torn, include.
 
 - **EPs are in.** 4+ tracks counts. 1–3 track singles stay out.
-- **Live albums are out — but always report them.** They mostly duplicate songs
-  already in the pool. List what you skipped so "add Cinquanta" is one word, not a
-  rebuild.
+- **Live albums are out — unless they're landmarks — and always report them.** Routine
+  live records mostly duplicate songs already in the pool. List what you skipped so "add
+  Cinquanta" is one word, not a rebuild. But a *canonical* live record is in (Cory: "imagine
+  skipping Nirvana's MTV Unplugged cuz it's live"): Buck Owens *Carnegie Hall Concert*,
+  Cash *At Folsom Prison*. When a live album is part of the scene's story, propose it in the
+  tier plan rather than in the skipped list.
 - **Remixes and covers are fine.** A covers record (A Perfect Circle's *eMOTIVe*) or a
   remix EP is worth having. Title-obvious remix *albums* are skipped by default —
   mention them and offer.
