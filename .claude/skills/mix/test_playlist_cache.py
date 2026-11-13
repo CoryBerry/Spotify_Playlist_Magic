@@ -199,3 +199,21 @@ def test_refresh_cache_keeps_the_old_blob_when_spotify_returns_nothing(monkeypat
     with pytest.raises(SystemExit):
         mh.cmd_refresh_cache(argparse.Namespace())
     assert [p["id"] for p in mh._cached_playlists()] == ["p1"]
+
+
+def test_upsert_keeps_owner_when_the_new_object_is_partial():
+    """`replace` fetches a slim playlist object (no owner). The web templates read
+    `playlist.owner.id`, so an upsert must never drop it — that 500'd /spotify/manage."""
+    owned = dict(_pl("p1", "Old"), owner={"id": USER, "display_name": "Cory"})
+    _seed([owned])
+    mh._cache_upsert_playlist({"id": "p1", "name": "New", "external_urls": {}}, USER,
+                              track_total=3)
+    (entry,) = mh._cached_playlists()
+    assert entry["name"] == "New"
+    assert entry["owner"]["id"] == USER
+
+
+def test_upsert_defaults_owner_for_a_playlist_not_yet_cached():
+    mh._cache_upsert_playlist({"id": "raw", "name": "Raw", "external_urls": {}}, USER)
+    (entry,) = mh._cached_playlists()
+    assert entry["owner"]["id"] == USER
